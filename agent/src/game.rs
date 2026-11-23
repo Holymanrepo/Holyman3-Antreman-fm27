@@ -680,8 +680,12 @@ const CLUB_TEAMS: u64 = 0x18;
 const TEAM_KIND: u64 = 0x28;
 const TEAM_AGE_LIMIT: u64 = 0x2C;
 
-fn club_teams(club: u64) -> Vec<u64> {
+pub(crate) fn club_teams(club: u64) -> Vec<u64> {
     pointer_list(club + CLUB_TEAMS, 64).map(|(_, v)| v).unwrap_or_default()
+}
+
+pub(crate) fn team_kind_and_age(t: u64) -> (u8, u8) {
+    (mem::u8_at(t + TEAM_KIND).unwrap_or(0), mem::u8_at(t + TEAM_AGE_LIMIT).unwrap_or(100))
 }
 
 /// Het team waarvan de app de training leest en schrijft: het gekozen team van de club, anders
