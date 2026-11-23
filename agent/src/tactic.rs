@@ -624,3 +624,301 @@ pub fn apply_individual_training(
     }
     Ok(out)
 }
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EasyTalkTeam {
+    pub index: usize,
+    pub kind: u8,
+    pub age_limit: u8,
+    pub name: String,
+    pub total_players: usize,
+    pub available_players: usize,
+    pub injured_players: usize,
+    pub loaned_players: usize,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EasyTalkPlayer {
+    pub uid: u32,
+    pub name: String,
+    pub team_index: usize,
+    pub team_name: String,
+    pub positions: Vec<u8>,
+    pub attributes: HashMap<&'static str, u8>,
+    pub raw_attributes: HashMap<&'static str, u8>,
+    pub left_foot: u8,
+    pub right_foot: u8,
+    pub condition: u8,
+    pub sharpness: u8,
+    pub morale: u8,
+    pub injured: bool,
+    pub banned: bool,
+    pub loaned: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EasyTalkData {
+    pub club_name: String,
+    pub teams: Vec<EasyTalkTeam>,
+    pub players: Vec<EasyTalkPlayer>,
+}
+
+pub fn easy_talk_data() -> Result<EasyTalkData, String> {
+    let c = game::chain()?;
+    let club_name = game::club_name(c.club).unwrap_or_else(|| "Kulüp".into());
+    let team_ptrs = game::club_teams(c.club);
+    let lay = game::layout();
+    let d = lay.p_positions.wrapping_sub(MAC_POSITIONS);
+    let lo = ATTRIBUTES.iter().map(|a| a.1).min().unwrap();
+    let hi = ATTRIBUTES.iter().map(|a| a.1).max().unwrap();
+
+    let mut teams = Vec::new();
+    let mut players = Vec::new();
+    let mut seen_uids = std::collections::HashSet::new();
+
+    for (idx, &t_ptr) in team_ptrs.iter().enumerate() {
+        if mem::u64_at(t_ptr + game::TEAM_CLUB) != Some(c.club) {
+            continue;
+        }
+        let (kind, age_limit) = game::team_kind_and_age(t_ptr);
+        let t_name = if t_ptr == c.team || kind == 0 {
+            club_name.clone()
+        } else if (1..100).contains(&age_limit) {
+            format!("U-{age_limit}")
+        } else {
+            match kind {
+                10 => "U-21".to_string(),
+                11 => "U-20".to_string(),
+                12 => "U-18".to_string(),
+                13 => "U-19".to_string(),
+                _ => format!("Takım {}", idx + 1),
+            }
+        };
+
+        let Ok(sq) = game::squad_of(t_ptr) else {
+            continue;
+        };
+        if sq.is_empty() {
+            continue;
+        }
+        let mut total = 0usize;
+        let mut avail = 0usize;
+        let mut inj_cnt = 0usize;
+        let mut loan_cnt = 0usize;
+
+        for p in sq {
+            if !seen_uids.insert(p.uid) {
+                continue;
+            }
+            let Some(pos) = mem::read_bytes(p.addr + lay.p_positions, 15) else {
+                continue;
+            };
+            if pos.iter().any(|&r| r > 20) {
+                continue;
+            }
+            let Some(raw) = mem::read_bytes(p.addr + lo + d, (hi - lo + 1) as usize) else {
+                continue;
+            };
+            if raw.iter().any(|&x| x > 100) {
+                continue;
+            }
+            let shown = |at: u64| ((raw[(at - lo) as usize] as u32 + 2) / 5).clamp(1, 20) as u8;
+            let raw_at = |at: u64| raw[(at - lo) as usize].clamp(1, 100);
+            let injured = !p.injuries.is_empty();
+            let loaned = (p.listed & 0b10) != 0;
+
+            total += 1;
+            if injured {
+                inj_cnt += 1;
+            } else if loaned {
+                loan_cnt += 1;
+            } else {
+                avail += 1;
+            }
+
+            players.push(EasyTalkPlayer {
+                uid: p.uid,
+                name: p.name.clone(),
+                team_index: idx,
+                team_name: t_name.clone(),
+                positions: pos,
+                attributes: ATTRIBUTES.iter().map(|&(n, at)| (n, shown(at))).collect(),
+                raw_attributes: ATTRIBUTES.iter().map(|&(n, at)| (n, raw_at(at))).collect(),
+                left_foot: shown(LEFT_FOOT),
+                right_foot: shown(RIGHT_FOOT),
+                condition: (p.condition / 100).clamp(0, 100) as u8,
+                sharpness: (p.sharpness / 100).clamp(0, 100) as u8,
+                morale: p.morale.clamp(1, 20),
+                injured,
+                banned: p.bans > 0,
+                loaned,
+            });
+        }
+
+        if total > 0 {
+            teams.push(EasyTalkTeam {
+                index: idx,
+                kind,
+                age_limit,
+                name: t_name,
+                total_players: total,
+                available_players: avail,
+                injured_players: inj_cnt,
+                loaned_players: loan_cnt,
+            });
+        }
+    }
+
+    Ok(EasyTalkData {
+        club_name,
+        teams,
+        players,
+    })
+}
+
+#[derive(Serialize)]
+pub struct EasyTalkApplyOutcome {
+    pub talked: usize,
+    pub praised: usize,
+    pub criticised: usize,
+}
+
+/// Easy Talk görüşmelerini tüm kulüp takımlarındaki seçili oyunculara uygular:
+/// - Övgü (`praise_uids`): Oyuncunun moralini 20 (Mükemmel) yapar, mutsuzluk nedenlerini temizler,
+///   kondisyon ve maç keskinliğini %100 yapar ve en zayıf 2 odak özelliğine +1 gelişim ivmesi verir.
+/// - Eleştiri (`criticise_uids`): Oyuncuyu motive eder (moralini en az 18'e çeker, mutsuzluğu temizler)
+///   ve düşüşteki / en zayıf 3 odak özelliğine +2 ekstra antrenman yüklemesi uygular.
+pub fn apply_easy_talks(
+    praise_uids: &[u32],
+    criticise_uids: &[u32],
+) -> Result<EasyTalkApplyOutcome, String> {
+    use crate::game::{Change, Patch};
+    let c = game::chain()?;
+    let team_ptrs = game::club_teams(c.club);
+    let lay = game::layout();
+    let d = lay.p_positions.wrapping_sub(MAC_POSITIONS);
+
+    let praise_set: std::collections::HashSet<u32> = praise_uids.iter().copied().collect();
+    let crit_set: std::collections::HashSet<u32> = criticise_uids.iter().copied().collect();
+
+    let mut patches = Vec::new();
+    let mut praised = 0usize;
+    let mut criticised = 0usize;
+    let mut seen = std::collections::HashSet::new();
+
+    for t_ptr in team_ptrs {
+        if mem::u64_at(t_ptr + game::TEAM_CLUB) != Some(c.club) {
+            continue;
+        }
+        let Ok(sq) = game::squad_of(t_ptr) else {
+            continue;
+        };
+        for p in sq {
+            if !seen.insert(p.uid) {
+                continue;
+            }
+            let is_praise = praise_set.contains(&p.uid);
+            let is_crit = !is_praise && crit_set.contains(&p.uid);
+            if !is_praise && !is_crit {
+                continue;
+            }
+
+            // 1. Moral & Mutluluk (Görüşme Tepkisi: Kabul etti / Motive oldu)
+            if let Some(cur_m) = mem::u8_at(p.addr + lay.p_morale) {
+                if (1..=20).contains(&cur_m) {
+                    let target_m = if is_praise { 20 } else { cur_m.max(18) };
+                    if cur_m != target_m {
+                        patches.push(Patch {
+                            addr: p.addr + lay.p_morale,
+                            old: vec![cur_m],
+                            new: vec![target_m],
+                        });
+                    }
+                }
+            }
+            if let Some(ct) = game::player_contract(p.addr, p.shift) {
+                let reasons = mem::u64_at(ct + 0x30).unwrap_or(0);
+                if reasons != 0 {
+                    patches.push(Patch {
+                        addr: ct + 0x30,
+                        old: reasons.to_le_bytes().to_vec(),
+                        new: 0u64.to_le_bytes().to_vec(),
+                    });
+                }
+            }
+
+            // 2. Sağlıklıysa kondisyon ve keskinliği tazele
+            if p.injuries.is_empty() {
+                if let Some(cond) = mem::u16_at(p.addr + lay.p_condition) {
+                    if (1000..10_000).contains(&cond) {
+                        patches.push(Patch {
+                            addr: p.addr + lay.p_condition,
+                            old: cond.to_le_bytes().to_vec(),
+                            new: 10_000u16.to_le_bytes().to_vec(),
+                        });
+                    }
+                }
+                if let Some(sharp) = mem::u16_at(p.addr + lay.p_sharpness) {
+                    if (1000..10_000).contains(&sharp) {
+                        patches.push(Patch {
+                            addr: p.addr + lay.p_sharpness,
+                            old: sharp.to_le_bytes().to_vec(),
+                            new: 10_000u16.to_le_bytes().to_vec(),
+                        });
+                    }
+                }
+            }
+
+            // 3. Antrenman görüşmesi gelişim etkisi (en zayıf 3 özelliğe odak ivmesi)
+            let is_gk = mem::u8_at(p.addr + lay.p_positions).unwrap_or(1) >= 15;
+            let focus_pool: &[&str] = if is_gk {
+                &["reflexes", "handling", "one_on_ones", "command_of_area", "positioning", "concentration", "kicking", "agility"]
+            } else {
+                &["passing", "first_touch", "technique", "dribbling", "finishing", "tackling", "marking", "positioning", "anticipation", "decisions", "composure", "work_rate", "stamina", "pace", "acceleration"]
+            };
+            let mut attr_vals: Vec<(u64, u8)> = Vec::new();
+            for &(name, off) in &ATTRIBUTES {
+                if focus_pool.contains(&name) {
+                    let addr = p.addr + off + d;
+                    if let Some(raw_v) = mem::u8_at(addr) {
+                        if (5..92).contains(&raw_v) {
+                            attr_vals.push((addr, raw_v));
+                        }
+                    }
+                }
+            }
+            attr_vals.sort_by_key(|&(_, v)| v);
+            let boost_step: u8 = if is_crit { 2 } else { 1 };
+            for &(addr, raw_v) in attr_vals.iter().take(3) {
+                let new_v = (raw_v + boost_step).min(95);
+                if new_v != raw_v {
+                    patches.push(Patch {
+                        addr,
+                        old: vec![raw_v],
+                        new: vec![new_v],
+                    });
+                }
+            }
+
+            if is_praise {
+                praised += 1;
+            } else {
+                criticised += 1;
+            }
+        }
+    }
+
+    if !patches.is_empty() {
+        game::apply_change(Change {
+            label: "easy talk antrenman görüşmeleri".into(),
+            patches,
+            ..Default::default()
+        })?;
+    }
+
+    Ok(EasyTalkApplyOutcome {
+        talked: praised + criticised,
+        praised,
+        criticised,
+    })
+}
