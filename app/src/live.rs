@@ -20,6 +20,7 @@ struct Snapshot {
     squad: Option<Vec<Value>>,
     understanding: Option<Value>,
     tactics: Option<crate::tactics::Data>,
+    easy_talks: Option<crate::tactics::EasyTalkData>,
     /// uitkomst van het op 100 % houden, als er iets teruggezet is
     kept: Option<Value>,
     /// otomatik bireysel antrenman sonucu
@@ -106,6 +107,13 @@ pub struct LiveState {
     /// tactieken en attributen van de selectie, voor de tactiekhulp (op verzoek opgehaald)
     pub tactics: Option<crate::tactics::Data>,
     pub tactics_error: String,
+    /// Easy Talk tüm kulüp takımları antrenman görüşmeleri verisi
+    pub easy_talks: Option<crate::tactics::EasyTalkData>,
+    pub easy_talks_baseline: HashMap<u32, HashMap<String, u8>>,
+    pub easy_talks_talked: HashSet<u32>,
+    pub easy_talks_left_out: HashSet<u32>,
+    pub easy_talks_override: HashMap<u32, crate::tactics::EasyTalkKind>,
+    pub easy_talks_last_summary: Vec<(String, String, &'static str, &'static str)>,
     /// managers in de save en teams van de club (opdracht `select`; None bij een oudere module)
     pub teams: Option<Value>,
     /// keuze van de gebruiker: (UID van de club van de manager, plek van het team voor de training)
@@ -139,11 +147,17 @@ impl Default for LiveState {
             wage_input: String::new(),
             allow_untested: true,
             keep_understanding: false,
-            auto_individual: true,
+            auto_individual: false,
             untested_build: false,
             sell: SellState::default(),
             tactics: None,
             tactics_error: String::new(),
+            easy_talks: None,
+            easy_talks_baseline: HashMap::new(),
+            easy_talks_talked: HashSet::new(),
+            easy_talks_left_out: HashSet::new(),
+            easy_talks_override: HashMap::new(),
+            easy_talks_last_summary: Vec::new(),
             teams: None,
             choice: (None, None),
             tactics_rx: None,
@@ -179,6 +193,16 @@ fn short_result(v: &Value) -> String {
                 format!("({p} oyuncu: +{a} rol özelliği, {pos} mevki doğal yapıldı, {fit} kondisyon %100)")
             } else {
                 format!("({p} players: +{a} role attrs, {pos} positions natural, {fit} fitness 100%)")
+            }
+        }
+        Value::Object(m) if m.contains_key("talked") => {
+            let t = m.get("talked").and_then(|v| v.as_u64()).unwrap_or(0);
+            let pr = m.get("praised").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cr = m.get("criticised").and_then(|v| v.as_u64()).unwrap_or(0);
+            if crate::i18n::is_tr() {
+                format!("({t} görüşme yapıldı: {pr} övgü, {cr} eleştiri)")
+            } else {
+                format!("({t} talks done: {pr} praise, {cr} criticism)")
             }
         }
         Value::Object(m) if m.contains_key("players") => format!("({} oyuncu)", m["players"]),
@@ -370,6 +394,9 @@ impl LiveState {
                 if let Ok(t) = agent::request(json!({"cmd": "tactics"})) {
                     snap.tactics = serde_json::from_value(t).ok();
                 }
+                if let Ok(et) = agent::request(json!({"cmd": "easy_talks"})) {
+                    snap.easy_talks = serde_json::from_value(et).ok();
+                }
                 if let Ok(f) = agent::request(json!({"cmd": "human_flags"})) {
                     snap.human_flags = Some(f);
                 }
@@ -470,6 +497,14 @@ impl LiveState {
                 if let Some(t) = s.tactics {
                     self.tactics = Some(t);
                     self.tactics_error.clear();
+                }
+                if let Some(et) = s.easy_talks {
+                    for p in &et.players {
+                        self.easy_talks_baseline
+                            .entry(p.uid)
+                            .or_insert_with(|| p.raw_attributes.clone());
+                    }
+                    self.easy_talks = Some(et);
                 }
                 if let Some(f) = s.human_flags {
                     self.human_flags = Some(f);
