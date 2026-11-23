@@ -158,6 +158,60 @@ struct App {
     tactic_pick: Option<usize>,
     tactics_asked: bool,
     frames: u32,
+    logo_tex: Option<egui::TextureHandle>,
+    update_rx: Option<mpsc::Receiver<Result<Option<(String, String)>, String>>>,
+    latest_release: Option<(String, String)>,
+    update_status: String,
+}
+
+const GITHUB_REPO_URL: &str = "https://github.com/Holymanrepo/Holyman3-Antreman-fm27";
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Holymanrepo/Holyman3-Antreman-fm27/releases/latest";
+
+fn spawn_update_check() -> mpsc::Receiver<Result<Option<(String, String)>, String>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args([
+            "-sL",
+            "--max-time",
+            "8",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "User-Agent: FM27-Trainer-Holyman3",
+            GITHUB_RELEASES_API,
+        ]);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        let res = match cmd.output() {
+            Ok(out) if out.status.success() => match serde_json::from_slice::<Value>(&out.stdout) {
+                Ok(v) => {
+                    if let Some(tag) = v.get("tag_name").and_then(|t| t.as_str()) {
+                        let clean = tag.trim_start_matches('v').trim();
+                        let current = env!("CARGO_PKG_VERSION").trim_start_matches('v').trim();
+                        let url = v
+                            .get("html_url")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("https://github.com/Holymanrepo/Holyman3-Antreman-fm27/releases/latest")
+                            .to_string();
+                        if !clean.is_empty() && clean != current {
+                            Ok(Some((tag.to_string(), url)))
+                        } else {
+                            Ok(None)
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(_) => Err("GitHub sürüm bilgisi okunamadı.".into()),
+            },
+            _ => Err("GitHub sunucusuna ulaşılamadı.".into()),
+        };
+        let _ = tx.send(res);
+    });
+    rx
 }
 
 impl App {
@@ -218,6 +272,30 @@ impl App {
                 l
             },
             frames: 0,
+            logo_tex: None,
+            update_rx: Some(spawn_update_check()),
+            latest_release: None,
+            update_status: String::new(),
+        }
+    }
+
+    fn poll_update(&mut self) {
+        let Some(rx) = &self.update_rx else { return };
+        if let Ok(res) = rx.try_recv() {
+            self.update_rx = None;
+            match res {
+                Ok(Some((tag, url))) => {
+                    self.update_status = format!("Yeni sürüm mevcut: {tag}");
+                    self.latest_release = Some((tag, url));
+                }
+                Ok(None) => {
+                    self.update_status = format!("Uygulama güncel (v{}).", env!("CARGO_PKG_VERSION"));
+                    self.latest_release = None;
+                }
+                Err(e) => {
+                    self.update_status = e;
+                }
+            }
         }
     }
 
@@ -417,9 +495,15 @@ impl App {
                 let edge = ui.max_rect().expand2(vec2(14.0, 20.0));
                 ui.painter().vline(edge.right() - 0.5, edge.y_range(), Stroke::new(1.0, theme::BORDER));
                 ui.horizontal(|ui| {
-                    Frame::new().fill(theme::ACCENT).corner_radius(CornerRadius::same(11)).inner_margin(Margin::same(7)).show(ui, |ui| {
-                        ui.label(theme::ic(icon::SOCCER_BALL).size(20.0).color(Color32::WHITE));
+                    let tex = self.logo_tex.get_or_insert_with(|| {
+                        let img = image::load_from_memory(include_bytes!("../assets/icon/icon_256.png"))
+                            .map(|d| d.to_rgba8())
+                            .unwrap_or_else(|_| image::RgbaImage::new(1, 1));
+                        let size = [img.width() as usize, img.height() as usize];
+                        let cimg = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                        ui.ctx().load_texture("holyman_logo", cimg, egui::TextureOptions::LINEAR)
                     });
+                    ui.add(egui::Image::from_texture(&*tex).fit_to_exact_size(vec2(36.0, 36.0)).corner_radius(CornerRadius::same(9)));
                     ui.vertical(|ui| {
                         ui.add_space(1.0);
                         ui.label(RichText::new("FM27 Trainer").font(egui::FontId::new(16.0, theme::bold())).color(theme::TEXT));
@@ -447,6 +531,12 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(theme::faint(format!("v{} · Türkçe · Holyman3", env!("CARGO_PKG_VERSION"))));
+                    if let Some((tag, url)) = self.latest_release.clone() {
+                        ui.add_space(6.0);
+                        if theme::primary_button(ui, icon::ARROW_CLOCKWISE, &format!("Yeni sürüm ({tag}) · İndir"), true).clicked() {
+                            open_url(&url);
+                        }
+                    }
                     ui.add_space(8.0);
                     Frame::new().fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(10)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -464,6 +554,12 @@ impl App {
                             if ui.add(egui::Label::new(RichText::new(CONTACT_EMAIL).size(12.0).color(theme::TEXT_DIM)).sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 ui.ctx().copy_text(CONTACT_EMAIL.to_string());
                                 open_url(&format!("mailto:{CONTACT_EMAIL}"));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(theme::ic(icon::EXPORT).size(15.0).color(theme::ACCENT_HI));
+                            if ui.add(egui::Label::new(RichText::new("GitHub · Holyman3").size(12.0).color(theme::TEXT_DIM)).sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                open_url(GITHUB_REPO_URL);
                             }
                         });
                     });
@@ -2377,10 +2473,10 @@ impl App {
         });
         ui.add_space(14.0);
         theme::card(ui, |ui| {
-            ui.label(theme::h2("İletişim"));
+            ui.label(theme::h2("İletişim & Güncellemeler"));
             ui.add_space(6.0);
             ui.add(egui::Label::new(theme::dim(
-                "Sorularınız, geri bildirimleriniz veya destek için e-posta üzerinden iletişime geçebilir ya da Kick kanalımı takip edebilirsiniz.",
+                "Sorularınız, geri bildirimleriniz veya destek için e-posta üzerinden iletişime geçebilir, Kick kanalımı takip edebilir veya GitHub üzerinden en güncel sürümü kontrol edebilirsiniz.",
             ))
             .wrap());
             ui.add_space(10.0);
@@ -2393,7 +2489,26 @@ impl App {
                     ui.ctx().copy_text(CONTACT_EMAIL.to_string());
                     open_url(&format!("mailto:{CONTACT_EMAIL}"));
                 }
+                ui.add_space(6.0);
+                if theme::button(ui, icon::EXPORT, "GitHub Sayfası", true).clicked() {
+                    open_url(GITHUB_REPO_URL);
+                }
+                ui.add_space(6.0);
+                if theme::button(ui, icon::ARROW_CLOCKWISE, "Güncellemeleri Kontrol Et", self.update_rx.is_none()).clicked() {
+                    self.update_status = "GitHub kontrol ediliyor…".into();
+                    self.update_rx = Some(spawn_update_check());
+                }
+                if let Some((tag, url)) = self.latest_release.clone() {
+                    ui.add_space(6.0);
+                    if theme::primary_button(ui, icon::ARROW_CLOCKWISE, &format!("Yeni sürüm ({tag}) İndir"), true).clicked() {
+                        open_url(&url);
+                    }
+                }
             });
+            if !self.update_status.is_empty() {
+                ui.add_space(6.0);
+                ui.label(theme::dim(&self.update_status));
+            }
         });
         ui.add_space(14.0);
         theme::card(ui, |ui| {
@@ -2415,6 +2530,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snapshot(ctx);
         self.poll_analysis(ctx);
+        self.poll_update();
         // automatisch uitlezen: niet tijdens handmatig aanpassen en nooit tijdens een testopname
         if self.settings.auto_read
             && !self.edit_mode
