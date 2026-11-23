@@ -203,11 +203,7 @@ fn player(p: &PlayerInfo) -> Option<Player> {
 
 static CACHED_OBJS: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
 
-fn inspect_obj(
-    obj: u64,
-    vts: &[u64],
-    by_person: &HashMap<u32, u32>,
-) -> Option<(usize, u8, Vec<u32>, Option<Vec<u64>>)> {
+fn read_obj_raw(obj: u64, vts: &[u64]) -> Option<(u8, Vec<u32>, Option<Vec<u64>>)> {
     let vt = mem::u64_at(obj)?;
     if !vts.contains(&vt) {
         return None;
@@ -222,14 +218,6 @@ fn inspect_obj(
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
         .collect();
-    let filled = ids[..SLOTS].iter().filter(|id| **id != EMPTY_SLOT).count();
-    let mine = ids[..SLOTS]
-        .iter()
-        .filter(|id| by_person.contains_key(id))
-        .count();
-    if mine == 0 || 2 * mine <= filled {
-        return None;
-    }
     let cur = mem::read_bytes(obj + SEL_CURRENT, 1)
         .map(|b| b[0])
         .unwrap_or(0);
@@ -246,62 +234,112 @@ fn inspect_obj(
     } else {
         None
     };
-    Some((mine, cur, ids, blocks))
+    Some((cur, ids, blocks))
+}
+
+fn count_mine(ids: &[u32], by_person: &HashMap<u32, u32>) -> Option<usize> {
+    let filled = ids[..SLOTS].iter().filter(|id| **id != EMPTY_SLOT).count();
+    let mine = ids[..SLOTS]
+        .iter()
+        .filter(|id| by_person.contains_key(id))
+        .count();
+    (mine > 0 && 2 * mine > filled).then_some(mine)
+}
+
+fn valid_tactic_blocks(blocks: &[u64], ids: &[u32], by_person: &HashMap<u32, u32>) -> bool {
+    blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| mem::is_ptr(**b))
+        .filter_map(|(i, b)| read_tactic(i, *b, ids, by_person))
+        .next()
+        .is_some()
 }
 
 fn find_club_tactic_objects(
     by_person: &HashMap<u32, u32>,
-) -> Result<(u64, u8, Vec<u32>, Vec<u64>, Option<(u64, u8, Vec<u32>)>), String> {
+) -> Result<(u64, u64, u8, Vec<u32>, Vec<u64>), String> {
     let img = mem::game_plugin().ok_or("game_plugin yüklenmedi")?;
     let vts = rtti::vtables_of(&img, &rtti::decorated("simatch", "PREPARED_TACTICS_CREATOR_ARRAY"));
     if vts.is_empty() {
         return Err("Kadro seçimleri bulunamadı".into());
     }
 
-    // Fast path: check cached pointers first (< 1ms)
+    // Fast path: check cached (blocks_obj, sel_obj) pointers first (< 1ms)
     if let Ok(guard) = CACHED_OBJS.lock() {
-        let (b_addr, l_addr) = *guard;
-        if b_addr != 0 {
-            if let Some((_, b_cur, b_ids, Some(blocks))) = inspect_obj(b_addr, &vts, by_person) {
-                let live = if l_addr != 0 && l_addr != b_addr {
-                    inspect_obj(l_addr, &vts, by_person).map(|(_, l_cur, l_ids, _)| (l_addr, l_cur, l_ids))
-                } else {
-                    None
-                };
-                return Ok((b_addr, b_cur, b_ids, blocks, live));
+        let (b_addr, s_addr) = *guard;
+        if b_addr != 0 && s_addr != 0 {
+            if let (Some((b_cur, _, Some(blocks))), Some((s_cur, s_ids, _))) =
+                (read_obj_raw(b_addr, &vts), read_obj_raw(s_addr, &vts))
+            {
+                if count_mine(&s_ids, by_person).is_some()
+                    && valid_tactic_blocks(&blocks, &s_ids, by_person)
+                {
+                    let cur = if (s_cur as usize) < blocks.len() {
+                        s_cur
+                    } else {
+                        b_cur
+                    };
+                    return Ok((b_addr, s_addr, cur, s_ids, blocks));
+                }
             }
         }
     }
 
-    let mut best_with_blocks: Option<(usize, u64, u8, Vec<u32>, Vec<u64>)> = None;
-    let mut best_live_sel: Option<(usize, u64, u8, Vec<u32>)> = None;
+    let mut sel_candidates: Vec<(usize, u64, u8, Vec<u32>, Option<Vec<u64>>)> = Vec::new();
+    let mut block_candidates: Vec<(u64, u8, Vec<u64>)> = Vec::new();
 
     for obj in rtti::instances(&vts, 4_000) {
-        let Some((mine, cur, ids, blocks_opt)) = inspect_obj(obj, &vts, by_person) else {
+        let Some((cur, ids, blocks_opt)) = read_obj_raw(obj, &vts) else {
             continue;
         };
+        if let Some(mine) = count_mine(&ids, by_person) {
+            sel_candidates.push((mine, obj, cur, ids, blocks_opt.clone()));
+        }
         if let Some(blocks) = blocks_opt {
-            if best_with_blocks.as_ref().is_none_or(|b| mine > b.0) {
-                best_with_blocks = Some((mine, obj, cur, ids, blocks));
-            }
-        } else if (cur as usize) < 3 {
-            // Live selection copy (begin == 0, end == 0) holds the active UI tactic tab & live 11
-            if best_live_sel.as_ref().is_none_or(|b| mine > b.0) {
-                best_live_sel = Some((mine, obj, cur, ids));
+            if blocks.iter().any(|b| mem::is_ptr(*b)) {
+                block_candidates.push((obj, cur, blocks));
             }
         }
     }
 
-    let (_, b_addr, b_cur, b_ids, blocks) = best_with_blocks.ok_or(
+    // Prefer the TEAM live selection object (or highest `mine` object)
+    sel_candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.4.is_some().cmp(&b.4.is_some()))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    let (_, s_addr, s_cur, s_ids, s_blocks) = sel_candidates.into_iter().next().ok_or(
         "Kulübünüzün kadro dizilişi bulunamadı: FM içinde Taktik ekranını açıp ilk 11'inizi seçin",
     )?;
-    let live = best_live_sel.map(|(_, l_addr, l_cur, l_ids)| (l_addr, l_cur, l_ids));
 
-    if let Ok(mut guard) = CACHED_OBJS.lock() {
-        *guard = (b_addr, live.as_ref().map(|l| l.0).unwrap_or(0));
+    // Find the closest valid tactic blocks object to `s_addr` (e.g. `s_addr - 0x5808` in TEAM, or `s_addr` itself)
+    let mut best_block: Option<(u64, u64, u8, Vec<u64>)> = None;
+    if let Some(blocks) = s_blocks {
+        if valid_tactic_blocks(&blocks, &s_ids, by_person) {
+            best_block = Some((0, s_addr, s_cur, blocks));
+        }
+    }
+    for (b_obj, b_cur, blocks) in block_candidates {
+        let dist = s_addr.abs_diff(b_obj);
+        if best_block.as_ref().is_none_or(|b| dist < b.0)
+            && valid_tactic_blocks(&blocks, &s_ids, by_person)
+        {
+            best_block = Some((dist, b_obj, b_cur, blocks));
+        }
     }
 
-    Ok((b_addr, b_cur, b_ids, blocks, live))
+    let (_, b_addr, b_cur, blocks) = best_block.ok_or("Taktik okunamıyor")?;
+    if let Ok(mut guard) = CACHED_OBJS.lock() {
+        *guard = (b_addr, s_addr);
+    }
+    let cur = if (s_cur as usize) < blocks.len() {
+        s_cur
+    } else {
+        b_cur
+    };
+    Ok((b_addr, s_addr, cur, s_ids, blocks))
 }
 
 pub fn tactics() -> Result<Tactics, String> {
@@ -311,11 +349,7 @@ pub fn tactics() -> Result<Tactics, String> {
         .iter()
         .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
         .collect();
-    let (_b_addr, b_cur, b_ids, blocks, live) = find_club_tactic_objects(&by_person)?;
-    let (cur_raw, ids) = match live {
-        Some((_, l_cur, l_ids)) => (l_cur as usize, l_ids),
-        None => (b_cur as usize, b_ids),
-    };
+    let (_b_addr, _s_addr, cur_raw, ids, blocks) = find_club_tactic_objects(&by_person)?;
     let tactics: Vec<Tactic> = blocks
         .iter()
         .enumerate()
@@ -325,7 +359,10 @@ pub fn tactics() -> Result<Tactics, String> {
     if tactics.is_empty() {
         return Err("Taktik okunamıyor".into());
     }
-    let current = tactics.iter().position(|t| t.index == cur_raw).unwrap_or(0);
+    let current = tactics
+        .iter()
+        .position(|t| t.index == cur_raw as usize)
+        .unwrap_or(0);
     Ok(Tactics {
         current,
         tactics,
@@ -350,15 +387,14 @@ pub fn set_active_tactic(index: usize) -> Result<usize, String> {
         .iter()
         .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
         .collect();
-    let (b_addr, _b_cur, _b_ids, _blocks, live) = find_club_tactic_objects(&by_person)?;
+    let (b_addr, s_addr, _cur, _ids, _blocks) = find_club_tactic_objects(&by_person)?;
     let mut targets = vec![b_addr];
-    if let Some((l_addr, _, _)) = live {
-        if l_addr != 0 && !targets.contains(&l_addr) {
-            targets.push(l_addr);
-        }
-        // Check sibling selection object (e.g. +0x2170) or header object (-0x5808) if present
-        for delta in [0x2170u64, 0x5808u64] {
-            for cand in [l_addr.wrapping_add(delta), l_addr.wrapping_sub(delta)] {
+    if s_addr != 0 && !targets.contains(&s_addr) {
+        targets.push(s_addr);
+    }
+    for delta in [0x2170u64, 0x5808u64, 0x7978u64] {
+        for base in [b_addr, s_addr] {
+            for cand in [base.wrapping_add(delta), base.wrapping_sub(delta)] {
                 if let Some(cur_bytes) = mem::read_bytes(cand + SEL_CURRENT, 2) {
                     if cur_bytes[0] < 3 && cur_bytes[1] == 0xFF && !targets.contains(&cand) {
                         targets.push(cand);
