@@ -77,12 +77,15 @@ struct Settings {
     /// Het team waarvan de app de training plant (plek in de teamlijst van de club; None = eigen team).
     #[serde(default)]
     training_team: Option<usize>,
+    /// Easy Talk (Antrenman Görüşmeleri) eşikleri ve takım ayarları.
+    #[serde(default)]
+    easy_talk: crate::tactics::EasyTalkSettings,
     planner: PlannerSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, easy_talk: crate::tactics::EasyTalkSettings::default(), planner: PlannerSettings::default() }
     }
 }
 
@@ -113,7 +116,6 @@ fn calendar_file() -> PathBuf {
 enum Page {
     Overview,
     Training,
-    Individual,
     Planning,
     Squad,
     Tactics,
@@ -161,6 +163,10 @@ struct App {
     last_game_tactic: Option<usize>,
     tactics_asked: bool,
     selected_player: Option<u32>,
+    easy_talk_settings_open: bool,
+    easy_talk_cutoff_team: usize,
+    easy_talk_show_summary: bool,
+    easy_talk_show_role_focus: bool,
     frames: u32,
     logo_tex: Option<egui::TextureHandle>,
     update_rx: Option<mpsc::Receiver<Result<Option<(String, String)>, String>>>,
@@ -234,7 +240,6 @@ impl App {
         // FM27_PAGE=training|planning|club|squad|sell|buy|settings opent direct die pagina (handig bij testen)
         let page = match std::env::var("FM27_PAGE").unwrap_or_default().as_str() {
             "training" => Page::Training,
-            "individual" => Page::Individual,
             "planning" => Page::Planning,
             "squad" => Page::Squad,
             "tactics" => Page::Tactics,
@@ -270,6 +275,10 @@ impl App {
             last_game_tactic: None,
             tactics_asked: false,
             selected_player: None,
+            easy_talk_settings_open: false,
+            easy_talk_cutoff_team: 0,
+            easy_talk_show_summary: false,
+            easy_talk_show_role_focus: false,
             live: LiveState::default(),
             frames: 0,
             logo_tex: None,
@@ -525,7 +534,6 @@ impl App {
                 let items = [
                     (Page::Overview, icon::GAUGE, t!("Genel Bakış", "Overview")),
                     (Page::Training, icon::BARBELL, t!("Antrenman", "Training")),
-                    (Page::Individual, icon::USER_PLUS, t!("Bireysel Antrenman", "Individual Training")),
                     (Page::Planning, icon::CALENDAR_DOTS, t!("Planlama", "Planning")),
                     (Page::Squad, icon::USERS_THREE, t!("Kadro", "Squad")),
                     (Page::Tactics, icon::STRATEGY, t!("Taktik", "Tactics")),
@@ -1455,302 +1463,6 @@ impl App {
         }
     }
 
-    // -------------------------------------------------------------------- bireysel antrenman
-
-    fn page_individual(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        use crate::tactics as tx;
-        let from_file = std::env::var_os("FM27_TACTICS_JSON");
-        if let (Some(f), None) = (&from_file, &self.live.tactics) {
-            self.live.tactics = std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str(&t).ok());
-        }
-        let connected = self.live.connected || (from_file.is_some() && self.live.tactics.is_some());
-        let busy = self.live.busy() || self.live.tactics_busy();
-        if connected && !self.tactics_asked && from_file.is_none() {
-            self.tactics_asked = true;
-            self.live.load_tactics(ctx);
-        }
-        let mut action: Option<(String, Value)> = None;
-        theme::page_header(
-            ui,
-            t!("Bireysel Antrenman & Oyuncu Gelişimi", "Individual Training & Player Development"),
-            t!(
-                "Her oyuncunun aktif taktikteki rolüne göre ek odağını, yoğunluğunu, zayıf ayağını ve mevki uyumunu otomatik analiz eder ve geliştirir.",
-                "Automatically analyzes and develops each player's additional focus, intensity, weak foot and position familiarity for their tactical role."
-            ),
-            |ui| {
-                if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Geri Al", "Undo"), connected && !busy).clicked() {
-                    action = Some((t!("geri al", "undo").into(), json!({"cmd": "undo"})));
-                }
-                if theme::button(
-                    ui,
-                    icon::FIRST_AID,
-                    t!("Kondisyon & Keskinlik %100", "100% Condition & Sharpness"),
-                    connected && !busy,
-                )
-                .clicked()
-                {
-                    action = Some((
-                        t!("kondisyon & keskinlik", "condition & sharpness").into(),
-                        json!({"cmd": "individual_training", "mode": "max_fitness"}),
-                    ));
-                }
-                if theme::button(
-                    ui,
-                    icon::STRATEGY,
-                    t!("Mevkileri Doğal (20) Yap", "Master Tactical Positions (20)"),
-                    connected && !busy,
-                )
-                .clicked()
-                {
-                    action = Some((
-                        t!("mevki uyumu", "position mastery").into(),
-                        json!({"cmd": "individual_training", "mode": "master_positions"}),
-                    ));
-                }
-                if theme::primary_button(
-                    ui,
-                    icon::SPARKLE,
-                    t!("Tüm Kadroya Bireysel Gelişim Uygula", "Apply Individual Development to Squad"),
-                    connected && !busy,
-                )
-                .clicked()
-                {
-                    action = Some((
-                        t!("bireysel gelişim", "individual development").into(),
-                        json!({"cmd": "individual_training", "mode": "boost_focus"}),
-                    ));
-                }
-                if busy {
-                    ui.spinner();
-                }
-            },
-        );
-        if let Some((l, r)) = action.take() {
-            self.live.refresh(ctx, &l, Some(r));
-        }
-        let (m, e) = (self.live.status.clone(), self.live.status_error);
-        self.status_line(ui, &m, e);
-
-        // ---- Otomatik Bireysel Antrenman Durum Kartı
-        let auto_ind = self.settings.auto_individual;
-        let accent = if auto_ind && connected { theme::SUCCESS } else { theme::WARNING };
-        let banner_w = (ui.available_width() - 38.0).max(80.0);
-        Frame::new()
-            .fill(theme::tint(accent, 0.10))
-            .stroke(Stroke::new(1.0, theme::tint(accent, 0.45)))
-            .corner_radius(CornerRadius::same(14))
-            .inner_margin(Margin::same(18))
-            .show(ui, |ui| {
-                ui.set_width(banner_w);
-                ui.set_max_width(banner_w);
-                ui.horizontal(|ui| {
-                    ui.label(theme::ic(if auto_ind { icon::CHECK_CIRCLE } else { icon::WARNING }).size(28.0).color(accent));
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(theme::h2(t!(
-                                "Her Güncellemede Bireysel Antrenmanları Otomatikleştir",
-                                "Automate Individual Training on Every Update"
-                            )));
-                            ui.add_space(8.0);
-                            if theme::toggle(ui, &mut self.settings.auto_individual).changed() {
-                                self.live.auto_individual = self.settings.auto_individual;
-                                self.save_settings();
-                            }
-                            ui.label(RichText::new(if auto_ind { t!("AÇIK", "ON") } else { t!("KAPALI", "OFF") }).strong().color(accent));
-                        });
-                        ui.add(
-                            egui::Label::new(theme::dim(t!(
-                                "Açık olduğunda uygulama her güncellemede oyuncuların taktikteki mevkilerini otomatik Doğal (20) yapar, sağlıklı oyuncuların kondisyon ve maç keskinliğini %100'de tutar ve rolündeki en zayıf odak özelliklerini + zayıf ayağını geliştirir.",
-                                "When enabled, every update automatically masters tactical positions to Natural (20), keeps healthy players at 100% condition & match sharpness, and develops each player's weakest role focus attributes & weak foot."
-                            )))
-                            .wrap(),
-                        );
-                    });
-                });
-            });
-        ui.add_space(14.0);
-
-        if !connected {
-            self.connect_card(ui, ctx);
-            return;
-        }
-        let Some(data) = self.live.tactics.clone() else {
-            theme::card(ui, |ui| {
-                ui.label(theme::faint(t!("Kadro ve taktik verileri okunuyor…", "Reading squad and tactic data…")));
-            });
-            return;
-        };
-        if data.tactics.is_empty() {
-            return;
-        }
-        let cur_idx = data.current.min(data.tactics.len() - 1);
-        let pick = self.tactic_pick.filter(|i| *i < data.tactics.len()).unwrap_or(cur_idx);
-        let tactic = &data.tactics[pick];
-        let places = tx::places(tactic);
-
-        // ---- 4 Mevki Grubu Analizi (Kaleciler, Savunma, Orta Saha, Hücum)
-        let units = tx::unit_stats(&places, &data.players);
-        ui.columns(4, |cols| {
-            let icons = [icon::SHIELD, icon::SHIELD, icon::COMPASS, icon::LIGHTNING];
-            for (i, (uname, ufit, ucond, ucount)) in units.iter().enumerate() {
-                let sub = t!(
-                    format!("{ucount} oyuncu · Ort. Kondisyon %{ucond:.0}"),
-                    format!("{ucount} players · Avg Cond {ucond:.0}%")
-                );
-                theme::stat_tile(
-                    &mut cols[i],
-                    icons[i],
-                    uname,
-                    &format!("{ufit:.0}"),
-                    &sub,
-                    theme::rgb(level_color(*ufit)),
-                    Some(*ufit),
-                );
-            }
-        });
-        ui.add_space(14.0);
-
-        // ---- Seçili Oyuncu Detaylı Gelişim Kartı
-        let intensity_col = |lvl: u8| match lvl {
-            2 => theme::ACCENT,
-            1 => theme::INFO,
-            _ => theme::WARNING,
-        };
-        let selected_uid = self.selected_player.or_else(|| places.iter().find_map(|pl| pl.uid)).or_else(|| data.players.first().map(|p| p.uid));
-        if let Some(sel_p) = selected_uid.and_then(|u| data.players.iter().find(|p| p.uid == u)) {
-            let plan = tx::player_individual_plan(sel_p, &places);
-            theme::card(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(theme::ic(icon::USER_PLUS).color(theme::ACCENT).size(22.0));
-                    ui.label(theme::h2(&sel_p.name));
-                    theme::pill(ui, &format!("{} · {}", plan.line_label, plan.role_name), theme::ACCENT_HI);
-                    theme::pill(ui, &t!(format!("Rol Uyumu: {:.0}", plan.role_fit), format!("Role Fit: {:.0}", plan.role_fit)), theme::rgb(level_color(plan.role_fit)));
-                    theme::pill(ui, &t!(format!("Ek Odak: {}", plan.focus_name), format!("Focus: {}", plan.focus_name)), theme::SUCCESS);
-                    theme::pill(ui, plan.intensity_label, intensity_col(plan.intensity_level));
-                    if !plan.foot_note.is_empty() {
-                        theme::pill(ui, &plan.foot_note, theme::WARNING);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::primary_button(
-                            ui,
-                            icon::SPARKLE,
-                            t!("Bu Oyuncuyu Şimdi Geliştir (+Odak & Mevki)", "Boost This Player Now (+Focus & Pos)"),
-                            !busy,
-                        )
-                        .clicked()
-                        {
-                            action = Some((
-                                sel_p.name.clone(),
-                                json!({"cmd": "individual_training", "mode": "boost_focus", "uids": [sel_p.uid]}),
-                            ));
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-                ui.columns(2, |cols| {
-                    cols[0].label(theme::caps(t!(
-                        "Geliştirilmesi Gereken En Zayıf Rol Özellikleri (Bireysel Odak)",
-                        "Weakest Role Attributes to Develop (Individual Focus)"
-                    )));
-                    cols[0].add_space(4.0);
-                    for (attr_lbl, val) in &plan.weakest_attrs {
-                        let pct = (*val as f32 * 5.0).clamp(0.0, 100.0);
-                        theme::metric_row(&mut cols[0], &format!("{attr_lbl} ({val}/20)"), pct, theme::rgb(level_color(pct)));
-                    }
-                    cols[1].label(theme::caps(t!(
-                        "Bu Roldeki En Güçlü Özellikleri",
-                        "Strongest Attributes in This Role"
-                    )));
-                    cols[1].add_space(4.0);
-                    for (attr_lbl, val) in &plan.strongest_attrs {
-                        let pct = (*val as f32 * 5.0).clamp(0.0, 100.0);
-                        theme::metric_row(&mut cols[1], &format!("{attr_lbl} ({val}/20)"), pct, theme::rgb(level_color(pct)));
-                    }
-                });
-            });
-            ui.add_space(14.0);
-        }
-
-        // ---- Tüm Kadro Bireysel Antrenman Tablosu
-        theme::card(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(theme::h2(t!("Kadro Bireysel Antrenman & Rol Odak Listesi", "Squad Individual Training & Role Focus List")));
-                ui.label(theme::faint(t!(
-                    "(Detaylı özellik analizi için bir oyuncunun adına veya 'Detay' düğmesine tıklayın)",
-                    "(Click a player's name or 'Details' to inspect their role attribute breakdown)"
-                )));
-            });
-            ui.add_space(8.0);
-            let in_xi: std::collections::HashSet<u32> = places.iter().filter_map(|p| p.uid).collect();
-            let mut sorted_players = data.players.clone();
-            sorted_players.sort_by_key(|p| (!in_xi.contains(&p.uid), p.name.clone()));
-
-            egui::Grid::new("indiv_grid").num_columns(7).spacing([14.0, 10.0]).striped(true).show(ui, |ui| {
-                for h in [
-                    t!("Oyuncu", "Player"),
-                    t!("Mevki & Rol", "Slot & Role"),
-                    t!("Otomatik Ek Odak", "Auto Additional Focus"),
-                    t!("Zayıf Rol Özellikleri", "Weak Role Attributes"),
-                    t!("Yoğunluk", "Intensity"),
-                    t!("Kond. / Kesk.", "Cond / Sharp"),
-                    "",
-                ] {
-                    ui.label(theme::caps(h));
-                }
-                ui.end_row();
-
-                for p in &sorted_players {
-                    let plan = tx::player_individual_plan(p, &places);
-                    let is_sel = selected_uid == Some(p.uid);
-                    ui.horizontal(|ui| {
-                        if in_xi.contains(&p.uid) {
-                            theme::pill(ui, "11", theme::ACCENT);
-                        }
-                        if ui.selectable_label(is_sel, RichText::new(&p.name).strong().color(theme::TEXT)).clicked() {
-                            self.selected_player = Some(p.uid);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(theme::label_strong(plan.line_label));
-                        theme::pill(ui, &format!("{} · {:.0}", plan.role_code, plan.role_fit), theme::rgb(level_color(plan.role_fit)))
-                            .on_hover_text(&plan.role_name);
-                        if plan.pos_rating < 20 {
-                            theme::pill(ui, &format!("{}/20", plan.pos_rating), theme::WARNING);
-                        }
-                    });
-                    theme::pill(ui, plan.focus_name, theme::SUCCESS);
-                    let weak_txt: Vec<String> = plan
-                        .weakest_attrs
-                        .iter()
-                        .take(3)
-                        .map(|(a, v)| format!("{a} ({v})"))
-                        .collect();
-                    ui.label(theme::dim(weak_txt.join(", ")));
-                    theme::pill(ui, plan.intensity_label, intensity_col(plan.intensity_level));
-                    let cond = if p.condition > 0 { p.condition } else { 100 };
-                    let sharp = if p.sharpness > 0 { p.sharpness } else { 100 };
-                    ui.label(RichText::new(format!("%{cond} · %{sharp}")).color(theme::rgb(level_color(cond as f32))));
-                    ui.horizontal(|ui| {
-                        if theme::small_button(ui, t!("Detay", "Details"), true).clicked() {
-                            self.selected_player = Some(p.uid);
-                        }
-                        if theme::small_button(ui, t!("Geliştir", "Boost"), !busy).clicked() {
-                            action = Some((
-                                p.name.clone(),
-                                json!({"cmd": "individual_training", "mode": "boost_focus", "uids": [p.uid]}),
-                            ));
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
-        });
-
-        if let Some((l, r)) = action {
-            self.live.refresh(ctx, &l, Some(r));
-        }
-    }
-
     // -------------------------------------------------------------------- selectie
 
     fn page_squad(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -1759,7 +1471,6 @@ impl App {
         let injured = self.live.squad.iter().filter(|p| p.get("injuries").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())).count();
         let banned = self.live.squad.iter().filter(|p| p.get("bans").and_then(|v| v.as_u64()).unwrap_or(0) > 0).count();
         let mut action: Option<(String, Value)> = None;
-        let mut inspect_indiv: Option<u32> = None;
         let n = self.live.squad.len();
         let subtitle = t!(
             format!("{n} oyuncu · {injured} sakat · {banned} cezalı"),
@@ -1916,9 +1627,6 @@ impl App {
                         if (m < 20 || unhappy) && theme::small_button(ui, t!("Moral Ver", "Inspire"), !busy).clicked() {
                             action = Some((t!("moral", "morale").into(), json!({"cmd": "inspire", "uids": [uid], "morale": 20, "clear_unhappiness": true})));
                         }
-                        if theme::small_button(ui, t!("Bireysel Antrenman", "Individual"), !busy).clicked() {
-                            inspect_indiv = Some(uid as u32);
-                        }
                     });
                     ui.end_row();
                 }
@@ -1926,10 +1634,6 @@ impl App {
         });
         if let Some((l, r)) = action {
             self.live.refresh(ctx, &l, Some(r));
-        }
-        if let Some(uid) = inspect_indiv {
-            self.selected_player = Some(uid);
-            self.page = Page::Individual;
         }
     }
 
@@ -2273,16 +1977,6 @@ impl App {
                 ui.add_space(6.0);
                 dirty |= ui
                     .checkbox(
-                        &mut self.settings.auto_individual,
-                        t!(
-                            "Bireysel antrenmanları her güncellemede otomatik uygula",
-                            "Automatically apply individual training on every update"
-                        ),
-                    )
-                    .changed();
-                ui.add_space(4.0);
-                dirty |= ui
-                    .checkbox(
                         &mut self.settings.capture_delay,
                         t!("Okumadan önce FM penceresini öne getir", "Bring FM window to front before reading"),
                     )
@@ -2556,7 +2250,7 @@ impl eframe::App for App {
         self.live.allow_untested = self.settings.allow_untested;
         self.live.choice = (self.settings.manager_club, self.settings.training_team);
         self.live.keep_understanding = self.settings.keep_understanding;
-        self.live.auto_individual = self.settings.auto_individual;
+        self.live.auto_individual = false;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
         self.sidebar(ctx);
         egui::CentralPanel::default()
@@ -2577,7 +2271,6 @@ impl eframe::App for App {
                     match self.page {
                         Page::Overview => self.page_overview(ui, ctx),
                         Page::Training => self.page_training(ui, ctx),
-                        Page::Individual => self.page_individual(ui, ctx),
                         Page::Planning => self.page_planning(ui),
                         Page::Squad => self.page_squad(ui, ctx),
                         Page::Tactics => self.page_tactics(ui, ctx),
