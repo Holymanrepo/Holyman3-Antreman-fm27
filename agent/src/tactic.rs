@@ -246,14 +246,13 @@ fn count_mine(ids: &[u32], by_person: &HashMap<u32, u32>) -> Option<usize> {
     (mine > 0 && 2 * mine > filled).then_some(mine)
 }
 
-fn valid_tactic_blocks(blocks: &[u64], ids: &[u32], by_person: &HashMap<u32, u32>) -> bool {
+fn valid_tactic_count(blocks: &[u64], ids: &[u32], by_person: &HashMap<u32, u32>) -> usize {
     blocks
         .iter()
         .enumerate()
         .filter(|(_, b)| mem::is_ptr(**b))
         .filter_map(|(i, b)| read_tactic(i, *b, ids, by_person))
-        .next()
-        .is_some()
+        .count()
 }
 
 fn find_club_tactic_objects(
@@ -273,7 +272,7 @@ fn find_club_tactic_objects(
                 (read_obj_raw(b_addr, &vts), read_obj_raw(s_addr, &vts))
             {
                 if count_mine(&s_ids, by_person).is_some()
-                    && valid_tactic_blocks(&blocks, &s_ids, by_person)
+                    && valid_tactic_count(&blocks, &s_ids, by_person) > 0
                 {
                     let cur = if (s_cur as usize) < blocks.len() {
                         s_cur
@@ -287,46 +286,48 @@ fn find_club_tactic_objects(
     }
 
     let mut sel_candidates: Vec<(usize, u64, u8, Vec<u32>, Option<Vec<u64>>)> = Vec::new();
-    let mut block_candidates: Vec<(u64, u8, Vec<u64>)> = Vec::new();
+    let mut block_candidates: Vec<(bool, u64, u8, Vec<u64>)> = Vec::new();
 
     for obj in rtti::instances(&vts, 4_000) {
         let Some((cur, ids, blocks_opt)) = read_obj_raw(obj, &vts) else {
             continue;
         };
-        if let Some(mine) = count_mine(&ids, by_person) {
+        let mine_opt = count_mine(&ids, by_person);
+        if let Some(mine) = mine_opt {
             sel_candidates.push((mine, obj, cur, ids, blocks_opt.clone()));
         }
         if let Some(blocks) = blocks_opt {
             if blocks.iter().any(|b| mem::is_ptr(*b)) {
-                block_candidates.push((obj, cur, blocks));
+                block_candidates.push((mine_opt.is_some(), obj, cur, blocks));
             }
         }
     }
 
-    // Prefer the TEAM live selection object (or highest `mine` object)
+    // Prefer the TEAM live selection object (`blocks.is_none()`) with highest `mine` for active `cur` & `ids`
     sel_candidates.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.4.is_some().cmp(&b.4.is_some()))
             .then_with(|| a.1.cmp(&b.1))
     });
 
-    let (_, s_addr, s_cur, s_ids, s_blocks) = sel_candidates.into_iter().next().ok_or(
+    let (_, s_addr, s_cur, s_ids, _) = sel_candidates.into_iter().next().ok_or(
         "Kulübünüzün kadro dizilişi bulunamadı: FM içinde Taktik ekranını açıp ilk 11'inizi seçin",
     )?;
 
-    // Find the closest valid tactic blocks object to `s_addr` (e.g. `s_addr - 0x5808` in TEAM, or `s_addr` itself)
-    let mut best_block: Option<(u64, u64, u8, Vec<u64>)> = None;
-    if let Some(blocks) = s_blocks {
-        if valid_tactic_blocks(&blocks, &s_ids, by_person) {
-            best_block = Some((0, s_addr, s_cur, blocks));
+    // Choose the tactic blocks container:
+    // 1) An object that also has our squad (`is_sel == true`),
+    // 2) Highest number of valid tactics (human manager has up to 3 prepared tactics; AI has 1),
+    // 3) Closest address distance to `s_addr`.
+    let mut best_block: Option<((bool, usize, std::cmp::Reverse<u64>), u64, u8, Vec<u64>)> = None;
+    for (is_sel, b_obj, b_cur, blocks) in block_candidates {
+        let cnt = valid_tactic_count(&blocks, &s_ids, by_person);
+        if cnt == 0 {
+            continue;
         }
-    }
-    for (b_obj, b_cur, blocks) in block_candidates {
         let dist = s_addr.abs_diff(b_obj);
-        if best_block.as_ref().is_none_or(|b| dist < b.0)
-            && valid_tactic_blocks(&blocks, &s_ids, by_person)
-        {
-            best_block = Some((dist, b_obj, b_cur, blocks));
+        let key = (is_sel, cnt, std::cmp::Reverse(dist));
+        if best_block.as_ref().is_none_or(|b| key > b.0) {
+            best_block = Some((key, b_obj, b_cur, blocks));
         }
     }
 
