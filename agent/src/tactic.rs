@@ -118,6 +118,9 @@ pub struct Player {
     pub attributes: HashMap<&'static str, u8>,
     pub left_foot: u8,
     pub right_foot: u8,
+    pub condition: u8,
+    pub sharpness: u8,
+    pub morale: u8,
     pub injured: bool,
     pub banned: bool,
 }
@@ -196,6 +199,9 @@ fn player(p: &PlayerInfo) -> Option<Player> {
         attributes: ATTRIBUTES.iter().map(|&(n, at)| (n, shown(at))).collect(),
         left_foot: shown(LEFT_FOOT),
         right_foot: shown(RIGHT_FOOT),
+        condition: (p.condition / 100).clamp(0, 100) as u8,
+        sharpness: (p.sharpness / 100).clamp(0, 100) as u8,
+        morale: p.morale.clamp(1, 20),
         injured: !p.injuries.is_empty(),
         banned: p.bans > 0,
     })
@@ -413,4 +419,208 @@ pub fn set_active_tactic(index: usize) -> Result<usize, String> {
         }
     }
     Ok(index)
+}
+
+#[derive(Serialize)]
+pub struct IndividualOutcome {
+    pub players: usize,
+    pub positions_mastered: usize,
+    pub focus_boosted: usize,
+    pub fitness_restored: usize,
+}
+
+/// Bireysel antrenman otomasyonu:
+/// - `mode == "auto"`: Aktif taktikteki mevki yatkınlıklarını Doğal (20) yapar, sağlıklı oyuncuların
+///   kondisyon ve maç keskinliğini %100'de tutar, en zayıf bireysel odak özelliklerini ve zayıf ayağı geliştirir.
+/// - `mode == "master_positions"`: Tüm oyuncuların oynayabildikleri mevkileri Doğal (20) yapar.
+/// - `mode == "max_fitness"`: Tüm oyuncuların kondisyon ve maç keskinliğini %100 yapar.
+/// - `mode == "boost_focus"`: Seçilen oyuncuların en zayıf 3 odak özelliğini ve zayıf ayağını geliştirir.
+pub fn apply_individual_training(
+    uids: &Option<Vec<u32>>,
+    mode: &str,
+) -> Result<IndividualOutcome, String> {
+    use crate::game::{Change, Patch};
+    let squad = game::squad()?;
+    let lay = game::layout();
+    let d = lay.p_positions.wrapping_sub(MAC_POSITIONS);
+    let chosen: Vec<&PlayerInfo> = squad
+        .iter()
+        .filter(|p| uids.as_ref().is_none_or(|u| u.contains(&p.uid)))
+        .collect();
+
+    let mut patches = Vec::new();
+    let mut out = IndividualOutcome {
+        players: 0,
+        positions_mastered: 0,
+        focus_boosted: 0,
+        fitness_restored: 0,
+    };
+
+    let do_fitness = matches!(mode, "auto" | "max_fitness");
+    let do_positions = matches!(mode, "auto" | "master_positions");
+    let do_focus = matches!(mode, "auto" | "boost_focus");
+    let step: u8 = if mode == "boost_focus" { 5 } else { 2 };
+
+    for p in chosen {
+        let before = patches.len();
+
+        // 1. Kondisyon & Maç Keskinliği (Condition & Match Sharpness -> 10000 = 100%)
+        if do_fitness && p.injuries.is_empty() {
+            let mut fit_changed = false;
+            if let Some(cond) = mem::u16_at(p.addr + lay.p_condition) {
+                if (1000..10_000).contains(&cond) {
+                    patches.push(Patch {
+                        addr: p.addr + lay.p_condition,
+                        old: cond.to_le_bytes().to_vec(),
+                        new: 10_000u16.to_le_bytes().to_vec(),
+                    });
+                    fit_changed = true;
+                }
+            }
+            if let Some(sharp) = mem::u16_at(p.addr + lay.p_sharpness) {
+                if (1000..10_000).contains(&sharp) {
+                    patches.push(Patch {
+                        addr: p.addr + lay.p_sharpness,
+                        old: sharp.to_le_bytes().to_vec(),
+                        new: 10_000u16.to_le_bytes().to_vec(),
+                    });
+                    fit_changed = true;
+                }
+            }
+            if fit_changed {
+                out.fitness_restored += 1;
+            }
+        }
+
+        // 2. Mevki Yatkınlığı (Beceri >= 12 olan mevkileri veya birincil mevkiyi Doğal = 20 yap)
+        if do_positions {
+            if let Some(pos) = mem::read_bytes(p.addr + lay.p_positions, 15) {
+                if pos.iter().all(|&r| r <= 20) {
+                    let max_r = pos.iter().copied().max().unwrap_or(1);
+                    let mut new_pos = pos.clone();
+                    let mut pos_changed = false;
+                    for (i, &r) in pos.iter().enumerate() {
+                        if (r >= 12 || (r == max_r && r > 1)) && r < 20 {
+                            new_pos[i] = 20;
+                            pos_changed = true;
+                        }
+                    }
+                    if pos_changed {
+                        patches.push(Patch {
+                            addr: p.addr + lay.p_positions,
+                            old: pos,
+                            new: new_pos,
+                        });
+                        out.positions_mastered += 1;
+                    }
+                }
+            }
+        }
+
+        // 3. Bireysel Rol Odağı & Zayıf Ayak Gelişimi
+        if do_focus {
+            let is_gk = mem::u8_at(p.addr + lay.p_positions).unwrap_or(1) >= 15;
+            let focus_pool: &[&str] = if is_gk {
+                &[
+                    "reflexes",
+                    "handling",
+                    "one_on_ones",
+                    "command_of_area",
+                    "aerial_reach",
+                    "positioning",
+                    "concentration",
+                    "kicking",
+                    "passing",
+                    "anticipation",
+                    "decisions",
+                    "agility",
+                ]
+            } else {
+                &[
+                    "passing",
+                    "first_touch",
+                    "technique",
+                    "dribbling",
+                    "finishing",
+                    "tackling",
+                    "marking",
+                    "positioning",
+                    "anticipation",
+                    "decisions",
+                    "composure",
+                    "concentration",
+                    "vision",
+                    "work_rate",
+                    "teamwork",
+                    "off_the_ball",
+                    "stamina",
+                    "pace",
+                    "acceleration",
+                    "agility",
+                    "balance",
+                    "strength",
+                ]
+            };
+
+            let mut attr_vals: Vec<(u64, u8)> = Vec::new();
+            for &(name, off) in &ATTRIBUTES {
+                if focus_pool.contains(&name) {
+                    let addr = p.addr + off + d;
+                    if let Some(raw_v) = mem::u8_at(addr) {
+                        if (5..90).contains(&raw_v) {
+                            attr_vals.push((addr, raw_v));
+                        }
+                    }
+                }
+            }
+            // En zayıf 3 odak özelliğini bul ve geliştir
+            attr_vals.sort_by_key(|&(_, v)| v);
+            let mut focus_changed = false;
+            for &(addr, raw_v) in attr_vals.iter().take(3) {
+                let target_cap = if mode == "boost_focus" { 95 } else { 85 };
+                if raw_v < target_cap {
+                    let new_v = (raw_v + step).min(target_cap);
+                    patches.push(Patch {
+                        addr,
+                        old: vec![raw_v],
+                        new: vec![new_v],
+                    });
+                    focus_changed = true;
+                }
+            }
+
+            // Zayıf ayak gelişimi
+            let lf_addr = p.addr + LEFT_FOOT + d;
+            let rf_addr = p.addr + RIGHT_FOOT + d;
+            if let (Some(lf), Some(rf)) = (mem::u8_at(lf_addr), mem::u8_at(rf_addr)) {
+                let (weak_addr, weak_v) = if lf <= rf { (lf_addr, lf) } else { (rf_addr, rf) };
+                if (5..75).contains(&weak_v) {
+                    let new_v = (weak_v + step).min(80);
+                    patches.push(Patch {
+                        addr: weak_addr,
+                        old: vec![weak_v],
+                        new: vec![new_v],
+                    });
+                    focus_changed = true;
+                }
+            }
+
+            if focus_changed {
+                out.focus_boosted += 1;
+            }
+        }
+
+        if patches.len() > before {
+            out.players += 1;
+        }
+    }
+
+    if !patches.is_empty() {
+        game::apply_change(Change {
+            label: "bireysel antrenman".into(),
+            patches,
+            ..Default::default()
+        })?;
+    }
+    Ok(out)
 }
