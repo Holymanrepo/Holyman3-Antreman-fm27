@@ -308,6 +308,83 @@ impl TacticMode {
     }
 }
 
+/// Özel Antrenman Kampı / Odak Profili.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CampMode {
+    /// Takvim ve taktiğe göre standart otomatik kamp.
+    #[default]
+    Auto,
+    /// Sezon Öncesi Kondisyon & Fiziksel Dayanıklılık Kampı.
+    PreSeasonFitness,
+    /// Genç & Oyuncu Gelişim Kampı (Bireysel ve Teknik Gelişim Ağırlıklı).
+    PlayerDevelopment,
+    /// Derbi & Final Hazırlık Kampı (Maç Hazırlığı, Duran Top ve Kaynaşma Ağırlıklı).
+    BigMatchPrep,
+}
+
+impl CampMode {
+    pub const ALL: [CampMode; 4] = [
+        CampMode::Auto,
+        CampMode::PreSeasonFitness,
+        CampMode::PlayerDevelopment,
+        CampMode::BigMatchPrep,
+    ];
+
+    pub fn label(self) -> &'static str {
+        if crate::i18n::is_tr() {
+            match self {
+                CampMode::Auto => "Standart (Takvime Göre Otomatik)",
+                CampMode::PreSeasonFitness => "Kondisyon & Fiziksel Yükleme Kampı",
+                CampMode::PlayerDevelopment => "Genç & Oyuncu Gelişim Kampı",
+                CampMode::BigMatchPrep => "Derbi & Final Maç Hazırlık Kampı",
+            }
+        } else {
+            match self {
+                CampMode::Auto => "Standard (Auto by Calendar)",
+                CampMode::PreSeasonFitness => "Fitness & Conditioning Camp",
+                CampMode::PlayerDevelopment => "Youth & Player Development Camp",
+                CampMode::BigMatchPrep => "Derby & Final Match Prep Camp",
+            }
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        if crate::i18n::is_tr() {
+            match self {
+                CampMode::Auto => "Standart Kamp",
+                CampMode::PreSeasonFitness => "Kondisyon Kampı",
+                CampMode::PlayerDevelopment => "Oyuncu Gelişim Kampı",
+                CampMode::BigMatchPrep => "Derbi & Final Kampı",
+            }
+        } else {
+            match self {
+                CampMode::Auto => "Standard Camp",
+                CampMode::PreSeasonFitness => "Fitness Camp",
+                CampMode::PlayerDevelopment => "Development Camp",
+                CampMode::BigMatchPrep => "Big Match Camp",
+            }
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        if crate::i18n::is_tr() {
+            match self {
+                CampMode::Auto => "Sezon dönemine, maç sayısına ve taktiğinize göre en dengeli haftalık programı otomatik oluşturur.",
+                CampMode::PreSeasonFitness => "Antrenman günlerine Kondisyon ve Dayanıklılık seansları ekleyerek fiziksel kapasiteyi ve maç kondisyonunu zirveye taşır.",
+                CampMode::PlayerDevelopment => "Ekstra yuvaları Bireysel Gelişim ve Teknik Topla Çalışma seanslarına ayırarak oyuncuların özellik gelişimini hızlandırır.",
+                CampMode::BigMatchPrep => "Maç hazırlığı, duran top organizasyonları ve takım kaynaşmasını maksimuma çıkararak kritik maçlara tam odak sağlar.",
+            }
+        } else {
+            match self {
+                CampMode::Auto => "Automatically builds the most balanced weekly schedule based on season phase, fixture load and your tactic.",
+                CampMode::PreSeasonFitness => "Adds Conditioning and Endurance sessions on training days to maximize physical capacity and match sharpness.",
+                CampMode::PlayerDevelopment => "Dedicates extra slots to Individual Development and Technical Ball Work to accelerate player attribute growth.",
+                CampMode::BigMatchPrep => "Maximizes match preparation, set-piece routines and team bonding for full focus ahead of critical fixtures.",
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerSettings {
     /// Onder deze Buy-In-score komt er Team Bonding na wedstrijden.
@@ -331,15 +408,53 @@ pub struct PlannerSettings {
     /// Taktikle uyumlu antrenman tarzı.
     #[serde(default)]
     pub tactic_mode: TacticMode,
+    /// Özel Antrenman Kampı modu.
+    #[serde(default)]
+    pub camp_mode: CampMode,
+    /// Kadro ortalama kondisyonuna göre dinlenme yükünü otomatik ayarla.
+    #[serde(default = "default_true")]
+    pub auto_smart_load: bool,
 }
 
 fn default_block() -> u32 {
     4
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for PlannerSettings {
     fn default() -> Self {
-        PlannerSettings { bonding_below: 60.0, set_pieces_every: 0, gain_per_session: 2.2, decay_per_week: 0.8, replan_every_weeks: 4, load: Load::Balanced, no_tactical: false, tactic_mode: TacticMode::Auto }
+        PlannerSettings {
+            bonding_below: 60.0,
+            set_pieces_every: 0,
+            gain_per_session: 2.2,
+            decay_per_week: 0.8,
+            replan_every_weeks: 4,
+            load: Load::Balanced,
+            no_tactical: false,
+            tactic_mode: TacticMode::Auto,
+            camp_mode: CampMode::Auto,
+            auto_smart_load: true,
+        }
+    }
+}
+
+impl PlannerSettings {
+    /// Kadro ortalama kondisyonuna göre akıllı yük ayarını uygular.
+    pub fn with_squad_condition(&self, avg_cond: Option<f32>) -> Self {
+        let mut s = self.clone();
+        if self.auto_smart_load {
+            if let Some(c) = avg_cond {
+                if c < 82.0 {
+                    s.load = Load::Light;
+                } else if c >= 92.0 && s.load == Load::Balanced {
+                    s.load = Load::Intense;
+                }
+            }
+        }
+        s
     }
 }
 
@@ -536,6 +651,36 @@ impl WeekState<'_> {
     }
 
     fn pick_extra(&mut self, today: &[String]) -> String {
+        match self.settings.camp_mode {
+            CampMode::PreSeasonFitness => {
+                for n in ["Conditioning", "Light Conditioning", "Heavy Conditioning"] {
+                    if self.used(n) < 2 && !today.iter().any(|t| t == n) {
+                        return self.take(n);
+                    }
+                }
+            }
+            CampMode::PlayerDevelopment => {
+                if !today.iter().any(|t| t == "Individual Development") && self.used("Individual Development") < 4 {
+                    return self.take("Individual Development");
+                }
+                let pool = self.settings.tactic_mode.development_pool();
+                if let Some(name) = pool.iter().filter(|n| !today.iter().any(|t| t == *n)).min_by_key(|n| self.used(n)).copied() {
+                    return self.take(name);
+                }
+            }
+            CampMode::BigMatchPrep => {
+                if self.used("Team Bonding") + self.bonding_reserved < 2 && !today.iter().any(|t| t == "Team Bonding") {
+                    return self.take("Team Bonding");
+                }
+                for n in SET_PIECES {
+                    if self.used(n) == 0 && !today.iter().any(|t| t == n) {
+                        return self.take(n);
+                    }
+                }
+                return self.pick_match_prep(today, true);
+            }
+            CampMode::Auto => {}
+        }
         let buy_in = self.eff.buy_in();
         if buy_in < self.settings.bonding_below && self.used("Team Bonding") + self.bonding_reserved < 2 {
             return self.take("Team Bonding");
