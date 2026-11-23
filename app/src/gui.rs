@@ -62,6 +62,9 @@ struct Settings {
     /// Tactisch begrip op 100 % houden zolang de app open is (FM laat het wekelijks zakken).
     #[serde(default)]
     keep_understanding: bool,
+    /// Her güncellemede bireysel antrenmanları (mevki uyumu, zayıf ayak, rol odakları, kondisyon) otomatik uygula.
+    #[serde(default = "yes")]
+    auto_individual: bool,
     /// De Breakdown elke zoveel seconden zelf opnieuw uitlezen zolang hij in FM open staat
     /// (idee en eerste versie: arhxmmmmm, fork forked-fm27-trainer).
     #[serde(default)]
@@ -79,7 +82,7 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, planner: PlannerSettings::default() }
     }
 }
 
@@ -110,11 +113,10 @@ fn calendar_file() -> PathBuf {
 enum Page {
     Overview,
     Training,
+    Individual,
     Planning,
-    Club,
     Squad,
     Tactics,
-    Sell,
     Settings,
 }
 
@@ -158,6 +160,7 @@ struct App {
     tactic_pick: Option<usize>,
     last_game_tactic: Option<usize>,
     tactics_asked: bool,
+    selected_player: Option<u32>,
     frames: u32,
     logo_tex: Option<egui::TextureHandle>,
     update_rx: Option<mpsc::Receiver<Result<Option<(String, String)>, String>>>,
@@ -231,11 +234,10 @@ impl App {
         // FM27_PAGE=training|planning|club|squad|sell|buy|settings opent direct die pagina (handig bij testen)
         let page = match std::env::var("FM27_PAGE").unwrap_or_default().as_str() {
             "training" => Page::Training,
+            "individual" => Page::Individual,
             "planning" => Page::Planning,
-            "club" => Page::Club,
             "squad" => Page::Squad,
             "tactics" => Page::Tactics,
-            "sell" | "buy" => Page::Sell,
             "settings" => Page::Settings,
             _ => Page::Overview,
         };
@@ -267,11 +269,8 @@ impl App {
             tactic_pick: None,
             last_game_tactic: None,
             tactics_asked: false,
-            live: {
-                let mut l = LiveState::default();
-                l.sell.buy = std::env::var("FM27_PAGE").as_deref() == Ok("buy");
-                l
-            },
+            selected_player: None,
+            live: LiveState::default(),
             frames: 0,
             logo_tex: None,
             update_rx: Some(spawn_update_check()),
@@ -526,11 +525,10 @@ impl App {
                 let items = [
                     (Page::Overview, icon::GAUGE, t!("Genel Bakış", "Overview")),
                     (Page::Training, icon::BARBELL, t!("Antrenman", "Training")),
+                    (Page::Individual, icon::USER_PLUS, t!("Bireysel Antrenman", "Individual Training")),
                     (Page::Planning, icon::CALENDAR_DOTS, t!("Planlama", "Planning")),
-                    (Page::Club, icon::BANK, t!("Kulüp", "Club")),
                     (Page::Squad, icon::USERS_THREE, t!("Kadro", "Squad")),
                     (Page::Tactics, icon::STRATEGY, t!("Taktik", "Tactics")),
-                    (Page::Sell, icon::HANDSHAKE, t!("Transferler", "Transfers")),
                     (Page::Settings, icon::GEAR_SIX, t!("Ayarlar", "Settings")),
                 ];
                 for (p, ic, label) in items {
@@ -915,11 +913,11 @@ impl App {
             self.team_picker(ui, ctx);
         }
 
-        // ---- Taktikle Uyumlu Antrenman Programı Seçici
+        // ---- Taktikle Uyumlu Antrenman Programı & Özel Kamp Modu Seçici
         theme::card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(theme::ic(icon::STRATEGY).color(theme::ACCENT).size(20.0));
-                ui.label(theme::h2(t!("Taktikle Uyumlu Antrenman Programı", "Tactic-Compatible Training Program")));
+                ui.label(theme::h2(t!("Taktikle Uyumlu Antrenman & Kamp Modu", "Tactic-Compatible Training & Camp Mode")));
             });
             ui.add_space(6.0);
             let mut mode = self.settings.planner.tactic_mode;
@@ -933,8 +931,53 @@ impl App {
                     self.live.training(ctx, &self.eff, &self.settings.planner, self.settings.auto_training, false);
                 }
             }
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.add(egui::Label::new(theme::dim(mode.description())).wrap());
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::ic(icon::SPARKLE).color(theme::INFO).size(18.0));
+                ui.label(theme::label_strong(t!("Özel Kamp Modu:", "Special Camp Mode:")));
+                let mut camp = self.settings.planner.camp_mode;
+                let camp_opts: Vec<(planner::CampMode, &str)> = planner::CampMode::ALL.iter().map(|c| (*c, c.short_label())).collect();
+                if theme::segmented(ui, &mut camp, &camp_opts) {
+                    self.settings.planner.camp_mode = camp;
+                    self.save_settings();
+                    self.week_plan = None;
+                    self.year.clear();
+                    if can {
+                        self.live.training(ctx, &self.eff, &self.settings.planner, self.settings.auto_training, false);
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(theme::dim(self.settings.planner.camp_mode.description())).wrap());
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                if theme::toggle(ui, &mut self.settings.planner.auto_smart_load).changed() {
+                    self.save_settings();
+                    if can {
+                        self.live.training(ctx, &self.eff, &self.settings.planner, self.settings.auto_training, false);
+                    }
+                }
+                ui.label(theme::label_strong(t!(
+                    "Kadro Kondisyonuna Göre Akıllı Yük Ayarı",
+                    "Smart Load Adjustment by Squad Condition"
+                )));
+                if let Some(avg_c) = self.live.squad_avg_condition() {
+                    theme::pill(
+                        ui,
+                        &t!(
+                            format!("Kadro Ort. Kondisyon: %{avg_c:.0}"),
+                            format!("Squad Avg Condition: {avg_c:.0}%")
+                        ),
+                        theme::rgb(level_color(avg_c)),
+                    );
+                }
+                ui.label(theme::faint(t!(
+                    "(Kondisyon %82 altına düştüğünde otomatik Daha Fazla Dinlenme moduna geçer)",
+                    "(Automatically switches to More Rest when squad condition drops below 82%)"
+                )));
+            });
         });
         ui.add_space(14.0);
 
@@ -1216,6 +1259,19 @@ impl App {
                     self.year.clear();
                 }
             });
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::ic(icon::SPARKLE).color(theme::INFO).size(18.0));
+                ui.label(theme::label_strong(t!("Kamp Modu:", "Camp Mode:")));
+                let mut camp = self.settings.planner.camp_mode;
+                let camp_opts: Vec<(planner::CampMode, &str)> = planner::CampMode::ALL.iter().map(|c| (*c, c.short_label())).collect();
+                if theme::segmented(ui, &mut camp, &camp_opts) {
+                    self.settings.planner.camp_mode = camp;
+                    self.save_settings();
+                    self.week_plan = None;
+                    self.year.clear();
+                }
+            });
         });
         ui.add_space(10.0);
 
@@ -1399,163 +1455,297 @@ impl App {
         }
     }
 
-    // -------------------------------------------------------------------- club
+    // -------------------------------------------------------------------- bireysel antrenman
 
-    fn page_club(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let busy = self.live.busy();
-        let connected = self.live.connected;
-        let name = self.live.club_name().unwrap_or_else(|| t!("Kulüp", "Club").into());
+    fn page_individual(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        use crate::tactics as tx;
+        let from_file = std::env::var_os("FM27_TACTICS_JSON");
+        if let (Some(f), None) = (&from_file, &self.live.tactics) {
+            self.live.tactics = std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str(&t).ok());
+        }
+        let connected = self.live.connected || (from_file.is_some() && self.live.tactics.is_some());
+        let busy = self.live.busy() || self.live.tactics_busy();
+        if connected && !self.tactics_asked && from_file.is_none() {
+            self.tactics_asked = true;
+            self.live.load_tactics(ctx);
+        }
         let mut action: Option<(String, Value)> = None;
-        let mut backup = false;
         theme::page_header(
             ui,
-            &name,
+            t!("Bireysel Antrenman & Oyuncu Gelişimi", "Individual Training & Player Development"),
             t!(
-                "Finansı canlı olarak düzenleyin. Değişiklikler FM içinde kaydettiğinizde kalıcı olur.",
-                "Edit finances live. Changes become permanent when you save inside FM."
+                "Her oyuncunun aktif taktikteki rolüne göre ek odağını, yoğunluğunu, zayıf ayağını ve mevki uyumunu otomatik analiz eder ve geliştirir.",
+                "Automatically analyzes and develops each player's additional focus, intensity, weak foot and position familiarity for their tactical role."
             ),
             |ui| {
                 if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Geri Al", "Undo"), connected && !busy).clicked() {
                     action = Some((t!("geri al", "undo").into(), json!({"cmd": "undo"})));
                 }
-                if theme::button(ui, icon::FLOPPY_DISK, t!("Kayıtları Yedekle", "Backup Saves"), !busy).clicked() {
-                    backup = true;
+                if theme::button(
+                    ui,
+                    icon::FIRST_AID,
+                    t!("Kondisyon & Keskinlik %100", "100% Condition & Sharpness"),
+                    connected && !busy,
+                )
+                .clicked()
+                {
+                    action = Some((
+                        t!("kondisyon & keskinlik", "condition & sharpness").into(),
+                        json!({"cmd": "individual_training", "mode": "max_fitness"}),
+                    ));
+                }
+                if theme::button(
+                    ui,
+                    icon::STRATEGY,
+                    t!("Mevkileri Doğal (20) Yap", "Master Tactical Positions (20)"),
+                    connected && !busy,
+                )
+                .clicked()
+                {
+                    action = Some((
+                        t!("mevki uyumu", "position mastery").into(),
+                        json!({"cmd": "individual_training", "mode": "master_positions"}),
+                    ));
+                }
+                if theme::primary_button(
+                    ui,
+                    icon::SPARKLE,
+                    t!("Tüm Kadroya Bireysel Gelişim Uygula", "Apply Individual Development to Squad"),
+                    connected && !busy,
+                )
+                .clicked()
+                {
+                    action = Some((
+                        t!("bireysel gelişim", "individual development").into(),
+                        json!({"cmd": "individual_training", "mode": "boost_focus"}),
+                    ));
+                }
+                if busy {
+                    ui.spinner();
                 }
             },
         );
-        if backup {
-            match agent::backup_saves() {
-                Ok(d) => self.live.status = t!(format!("Yedek oluşturuldu: {}", d.display()), format!("Backup created: {}", d.display())),
-                Err(e) => self.live.status = format!("{e:#}"),
-            }
-        }
         if let Some((l, r)) = action.take() {
             self.live.refresh(ctx, &l, Some(r));
         }
         let (m, e) = (self.live.status.clone(), self.live.status_error);
         self.status_line(ui, &m, e);
+
+        // ---- Otomatik Bireysel Antrenman Durum Kartı
+        let auto_ind = self.settings.auto_individual;
+        let accent = if auto_ind && connected { theme::SUCCESS } else { theme::WARNING };
+        let banner_w = (ui.available_width() - 38.0).max(80.0);
+        Frame::new()
+            .fill(theme::tint(accent, 0.10))
+            .stroke(Stroke::new(1.0, theme::tint(accent, 0.45)))
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(Margin::same(18))
+            .show(ui, |ui| {
+                ui.set_width(banner_w);
+                ui.set_max_width(banner_w);
+                ui.horizontal(|ui| {
+                    ui.label(theme::ic(if auto_ind { icon::CHECK_CIRCLE } else { icon::WARNING }).size(28.0).color(accent));
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(theme::h2(t!(
+                                "Her Güncellemede Bireysel Antrenmanları Otomatikleştir",
+                                "Automate Individual Training on Every Update"
+                            )));
+                            ui.add_space(8.0);
+                            if theme::toggle(ui, &mut self.settings.auto_individual).changed() {
+                                self.live.auto_individual = self.settings.auto_individual;
+                                self.save_settings();
+                            }
+                            ui.label(RichText::new(if auto_ind { t!("AÇIK", "ON") } else { t!("KAPALI", "OFF") }).strong().color(accent));
+                        });
+                        ui.add(
+                            egui::Label::new(theme::dim(t!(
+                                "Açık olduğunda uygulama her güncellemede oyuncuların taktikteki mevkilerini otomatik Doğal (20) yapar, sağlıklı oyuncuların kondisyon ve maç keskinliğini %100'de tutar ve rolündeki en zayıf odak özelliklerini + zayıf ayağını geliştirir.",
+                                "When enabled, every update automatically masters tactical positions to Natural (20), keeps healthy players at 100% condition & match sharpness, and develops each player's weakest role focus attributes & weak foot."
+                            )))
+                            .wrap(),
+                        );
+                    });
+                });
+            });
+        ui.add_space(14.0);
+
         if !connected {
             self.connect_card(ui, ctx);
             return;
         }
-        let Some(c) = self.live.club.clone() else { return };
-        let g = |k: &str| c.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
-        let rate = self.settings.rate;
-        let eur = |v: i64| format!("€ {}", money((v as f32 * rate) as i64));
-        let gbp = |v: i64| format!("£ {}", money(v));
-        ui.columns(3, |cols| {
-            theme::stat_tile(&mut cols[0], icon::COINS, t!("Bakiye", "Balance"), &eur(g("balance")), &gbp(g("balance")), theme::INFO, None);
-            theme::stat_tile(&mut cols[1], icon::BANK, t!("Transfer Bütçesi", "Transfer Budget"), &eur(g("transfer_budget")), &gbp(g("transfer_budget")), theme::ACCENT, None);
-            theme::stat_tile(&mut cols[2], icon::USERS_THREE, t!("Haftalık Maaş Bütçesi", "Weekly Wage Budget"), &eur(g("wage_budget")), &gbp(g("wage_budget")), theme::SUCCESS, None);
-        });
-        ui.add_space(14.0);
-        ui.columns(2, |cols| {
-            theme::card(&mut cols[0], |ui| {
-                ui.label(theme::h2(t!("Transfer Bütçesi", "Transfer Budget")));
-                ui.label(theme::faint(t!("Milyon Euro cinsinden tutar", "Amount in million euros")));
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.live.transfer_input).hint_text("50").desired_width(90.0));
-                    ui.label(t!("Mn €", "M €"));
-                    if theme::primary_button(ui, icon::CHECK_CIRCLE, t!("Ayarla", "Set"), !busy).clicked() {
-                        if let Ok(m) = self.live.transfer_input.replace(',', ".").trim().parse::<f64>() {
-                            action = Some((t!("transfer bütçesi", "transfer budget").into(), json!({"cmd": "set_finances", "transfer_budget": (m * 1e6 / rate as f64) as i64})));
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    for add in [10, 25, 50, 100] {
-                        if theme::small_button(ui, &format!("+€{add}M"), !busy).clicked() {
-                            let v = g("transfer_budget") + (add as f64 * 1e6 / rate as f64) as i64;
-                            action = Some((t!("transfer bütçesi", "transfer budget").into(), json!({"cmd": "set_finances", "transfer_budget": v})));
-                        }
-                    }
-                });
+        let Some(data) = self.live.tactics.clone() else {
+            theme::card(ui, |ui| {
+                ui.label(theme::faint(t!("Kadro ve taktik verileri okunuyor…", "Reading squad and tactic data…")));
             });
-            theme::card(&mut cols[1], |ui| {
-                ui.label(theme::h2(t!("Maaş Bütçesi", "Wage Budget")));
-                ui.label(theme::faint(t!("Haftalık bin Euro cinsinden tutar", "Weekly amount in thousand euros")));
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.live.wage_input).hint_text("900").desired_width(90.0));
-                    ui.label(t!("B € / hf", "K € / wk"));
-                    if theme::primary_button(ui, icon::CHECK_CIRCLE, t!("Ayarla", "Set"), !busy).clicked() {
-                        if let Ok(k) = self.live.wage_input.replace(',', ".").trim().parse::<f64>() {
-                            action = Some((t!("maaş bütçesi", "wage budget").into(), json!({"cmd": "set_finances", "wage_budget": (k * 1e3 / rate as f64) as i64})));
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    for add in [50, 100, 250] {
-                        if theme::small_button(ui, &format!("+€{add}{}", t!("B", "K")), !busy).clicked() {
-                            let v = g("wage_budget") + (add as f64 * 1e3 / rate as f64) as i64;
-                            action = Some((t!("maaş bütçesi", "wage budget").into(), json!({"cmd": "set_finances", "wage_budget": v})));
-                        }
-                    }
-                });
-            });
-        });
-        ui.add_space(8.0);
-        ui.label(theme::faint(t!(
-            format!("FM dahili olarak sterlin kullanır; Euro tutarları {rate:.2} kuru ile hesaplanır (Ayarlar'dan değiştirilebilir)."),
-            format!("FM uses pounds internally; euro amounts are converted at {rate:.2} (changeable in Settings).")
-        )));
-        ui.add_space(12.0);
-        let hf = self.live.human_flags.clone();
-        theme::card(ui, |ui| {
-            ui.label(theme::h2(t!("Oyun Kuralları", "Game Rules")));
-            ui.add(egui::Label::new(theme::faint(t!(
-                "FM oyun içi editöründeki anahtarların aynısı, doğrudan menajerinize uygulanır. FM'de turnuvanın kadro kayıt ekranından kontrol edebilirsiniz.",
-                "Same switches as FM's in-game editor, applied directly to your manager. You can verify them on the competition squad registration screen in FM."
-            ))).wrap());
-            ui.add_space(6.0);
-            match hf.as_ref().and_then(|v| v.get("supported")).and_then(|v| v.as_bool()) {
-                Some(true) => {
-                    let rows = [
-                        (
-                            "registration_anytime",
-                            t!("Oyuncuları her zaman kaydet", "Allow squad registration anytime"),
-                            t!(
-                                "Kayıt dönemi dışında da kadro kaydı yapılabilsin (lig, UEFA).",
-                                "Register players outside the registration window (league, UEFA)."
-                            ),
-                        ),
-                        (
-                            "numbers_anytime",
-                            t!("Forma numaralarını her zaman değiştir", "Allow changing squad numbers anytime"),
-                            t!(
-                                "Turnuva forma numaralarını kilitlemiş olsa bile değiştirilebilsin.",
-                                "Change shirt numbers even after a competition has locked them."
-                            ),
-                        ),
-                    ];
-                    for (key, label, hint) in rows {
-                        let mut on = hf.as_ref().and_then(|v| v.get(key)).and_then(|v| v.as_bool()).unwrap_or(false);
-                        ui.horizontal_wrapped(|ui| {
-                            if theme::toggle(ui, &mut on).changed() && connected && !busy {
-                                let mut m = serde_json::Map::new();
-                                m.insert("cmd".into(), Value::String("set_human_flags".into()));
-                                m.insert(key.into(), Value::Bool(on));
-                                action = Some((label.to_string(), Value::Object(m)));
-                            }
-                            ui.label(theme::label_strong(label));
-                            ui.label(theme::faint(hint));
-                        });
-                    }
-                }
-                Some(false) => {
-                    ui.label(theme::faint(t!(
-                        "Bu FM sürümünde veya platformda henüz mevcut değil.",
-                        "Not yet available on this FM build or platform."
-                    )));
-                }
-                None => {
-                    ui.label(theme::faint(t!("Henüz okunmadı.", "Not read yet.")));
-                }
+            return;
+        };
+        if data.tactics.is_empty() {
+            return;
+        }
+        let cur_idx = data.current.min(data.tactics.len() - 1);
+        let pick = self.tactic_pick.filter(|i| *i < data.tactics.len()).unwrap_or(cur_idx);
+        let tactic = &data.tactics[pick];
+        let places = tx::places(tactic);
+
+        // ---- 4 Mevki Grubu Analizi (Kaleciler, Savunma, Orta Saha, Hücum)
+        let units = tx::unit_stats(&places, &data.players);
+        ui.columns(4, |cols| {
+            let icons = [icon::SHIELD, icon::SHIELD, icon::COMPASS, icon::LIGHTNING];
+            for (i, (uname, ufit, ucond, ucount)) in units.iter().enumerate() {
+                let sub = t!(
+                    format!("{ucount} oyuncu · Ort. Kondisyon %{ucond:.0}"),
+                    format!("{ucount} players · Avg Cond {ucond:.0}%")
+                );
+                theme::stat_tile(
+                    &mut cols[i],
+                    icons[i],
+                    uname,
+                    &format!("{ufit:.0}"),
+                    &sub,
+                    theme::rgb(level_color(*ufit)),
+                    Some(*ufit),
+                );
             }
         });
+        ui.add_space(14.0);
+
+        // ---- Seçili Oyuncu Detaylı Gelişim Kartı
+        let intensity_col = |lvl: u8| match lvl {
+            2 => theme::ACCENT,
+            1 => theme::INFO,
+            _ => theme::WARNING,
+        };
+        let selected_uid = self.selected_player.or_else(|| places.iter().find_map(|pl| pl.uid)).or_else(|| data.players.first().map(|p| p.uid));
+        if let Some(sel_p) = selected_uid.and_then(|u| data.players.iter().find(|p| p.uid == u)) {
+            let plan = tx::player_individual_plan(sel_p, &places);
+            theme::card(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(theme::ic(icon::USER_PLUS).color(theme::ACCENT).size(22.0));
+                    ui.label(theme::h2(&sel_p.name));
+                    theme::pill(ui, &format!("{} · {}", plan.line_label, plan.role_name), theme::ACCENT_HI);
+                    theme::pill(ui, &t!(format!("Rol Uyumu: {:.0}", plan.role_fit), format!("Role Fit: {:.0}", plan.role_fit)), theme::rgb(level_color(plan.role_fit)));
+                    theme::pill(ui, &t!(format!("Ek Odak: {}", plan.focus_name), format!("Focus: {}", plan.focus_name)), theme::SUCCESS);
+                    theme::pill(ui, plan.intensity_label, intensity_col(plan.intensity_level));
+                    if !plan.foot_note.is_empty() {
+                        theme::pill(ui, &plan.foot_note, theme::WARNING);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::primary_button(
+                            ui,
+                            icon::SPARKLE,
+                            t!("Bu Oyuncuyu Şimdi Geliştir (+Odak & Mevki)", "Boost This Player Now (+Focus & Pos)"),
+                            !busy,
+                        )
+                        .clicked()
+                        {
+                            action = Some((
+                                sel_p.name.clone(),
+                                json!({"cmd": "individual_training", "mode": "boost_focus", "uids": [sel_p.uid]}),
+                            ));
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.columns(2, |cols| {
+                    cols[0].label(theme::caps(t!(
+                        "Geliştirilmesi Gereken En Zayıf Rol Özellikleri (Bireysel Odak)",
+                        "Weakest Role Attributes to Develop (Individual Focus)"
+                    )));
+                    cols[0].add_space(4.0);
+                    for (attr_lbl, val) in &plan.weakest_attrs {
+                        let pct = (*val as f32 * 5.0).clamp(0.0, 100.0);
+                        theme::metric_row(&mut cols[0], &format!("{attr_lbl} ({val}/20)"), pct, theme::rgb(level_color(pct)));
+                    }
+                    cols[1].label(theme::caps(t!(
+                        "Bu Roldeki En Güçlü Özellikleri",
+                        "Strongest Attributes in This Role"
+                    )));
+                    cols[1].add_space(4.0);
+                    for (attr_lbl, val) in &plan.strongest_attrs {
+                        let pct = (*val as f32 * 5.0).clamp(0.0, 100.0);
+                        theme::metric_row(&mut cols[1], &format!("{attr_lbl} ({val}/20)"), pct, theme::rgb(level_color(pct)));
+                    }
+                });
+            });
+            ui.add_space(14.0);
+        }
+
+        // ---- Tüm Kadro Bireysel Antrenman Tablosu
+        theme::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::h2(t!("Kadro Bireysel Antrenman & Rol Odak Listesi", "Squad Individual Training & Role Focus List")));
+                ui.label(theme::faint(t!(
+                    "(Detaylı özellik analizi için bir oyuncunun adına veya 'Detay' düğmesine tıklayın)",
+                    "(Click a player's name or 'Details' to inspect their role attribute breakdown)"
+                )));
+            });
+            ui.add_space(8.0);
+            let in_xi: std::collections::HashSet<u32> = places.iter().filter_map(|p| p.uid).collect();
+            let mut sorted_players = data.players.clone();
+            sorted_players.sort_by_key(|p| (!in_xi.contains(&p.uid), p.name.clone()));
+
+            egui::Grid::new("indiv_grid").num_columns(7).spacing([14.0, 10.0]).striped(true).show(ui, |ui| {
+                for h in [
+                    t!("Oyuncu", "Player"),
+                    t!("Mevki & Rol", "Slot & Role"),
+                    t!("Otomatik Ek Odak", "Auto Additional Focus"),
+                    t!("Zayıf Rol Özellikleri", "Weak Role Attributes"),
+                    t!("Yoğunluk", "Intensity"),
+                    t!("Kond. / Kesk.", "Cond / Sharp"),
+                    "",
+                ] {
+                    ui.label(theme::caps(h));
+                }
+                ui.end_row();
+
+                for p in &sorted_players {
+                    let plan = tx::player_individual_plan(p, &places);
+                    let is_sel = selected_uid == Some(p.uid);
+                    ui.horizontal(|ui| {
+                        if in_xi.contains(&p.uid) {
+                            theme::pill(ui, "11", theme::ACCENT);
+                        }
+                        if ui.selectable_label(is_sel, RichText::new(&p.name).strong().color(theme::TEXT)).clicked() {
+                            self.selected_player = Some(p.uid);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(theme::label_strong(plan.line_label));
+                        theme::pill(ui, &format!("{} · {:.0}", plan.role_code, plan.role_fit), theme::rgb(level_color(plan.role_fit)))
+                            .on_hover_text(&plan.role_name);
+                        if plan.pos_rating < 20 {
+                            theme::pill(ui, &format!("{}/20", plan.pos_rating), theme::WARNING);
+                        }
+                    });
+                    theme::pill(ui, plan.focus_name, theme::SUCCESS);
+                    let weak_txt: Vec<String> = plan
+                        .weakest_attrs
+                        .iter()
+                        .take(3)
+                        .map(|(a, v)| format!("{a} ({v})"))
+                        .collect();
+                    ui.label(theme::dim(weak_txt.join(", ")));
+                    theme::pill(ui, plan.intensity_label, intensity_col(plan.intensity_level));
+                    let cond = if p.condition > 0 { p.condition } else { 100 };
+                    let sharp = if p.sharpness > 0 { p.sharpness } else { 100 };
+                    ui.label(RichText::new(format!("%{cond} · %{sharp}")).color(theme::rgb(level_color(cond as f32))));
+                    ui.horizontal(|ui| {
+                        if theme::small_button(ui, t!("Detay", "Details"), true).clicked() {
+                            self.selected_player = Some(p.uid);
+                        }
+                        if theme::small_button(ui, t!("Geliştir", "Boost"), !busy).clicked() {
+                            action = Some((
+                                p.name.clone(),
+                                json!({"cmd": "individual_training", "mode": "boost_focus", "uids": [p.uid]}),
+                            ));
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+
         if let Some((l, r)) = action {
             self.live.refresh(ctx, &l, Some(r));
         }
@@ -1569,7 +1759,7 @@ impl App {
         let injured = self.live.squad.iter().filter(|p| p.get("injuries").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())).count();
         let banned = self.live.squad.iter().filter(|p| p.get("bans").and_then(|v| v.as_u64()).unwrap_or(0) > 0).count();
         let mut action: Option<(String, Value)> = None;
-        let mut sell: Option<u32> = None;
+        let mut inspect_indiv: Option<u32> = None;
         let n = self.live.squad.len();
         let subtitle = t!(
             format!("{n} oyuncu · {injured} sakat · {banned} cezalı"),
@@ -1726,9 +1916,8 @@ impl App {
                         if (m < 20 || unhappy) && theme::small_button(ui, t!("Moral Ver", "Inspire"), !busy).clicked() {
                             action = Some((t!("moral", "morale").into(), json!({"cmd": "inspire", "uids": [uid], "morale": 20, "clear_unhappiness": true})));
                         }
-                        let coach = p.get("player_coach").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if !coach && theme::small_button(ui, t!("Sat", "Sell"), !busy).clicked() {
-                            sell = Some(uid as u32);
+                        if theme::small_button(ui, t!("Bireysel Antrenman", "Individual"), !busy).clicked() {
+                            inspect_indiv = Some(uid as u32);
                         }
                     });
                     ui.end_row();
@@ -1738,23 +1927,11 @@ impl App {
         if let Some((l, r)) = action {
             self.live.refresh(ctx, &l, Some(r));
         }
-        if let Some(uid) = sell {
-            self.start_sale(uid);
+        if let Some(uid) = inspect_indiv {
+            self.selected_player = Some(uid);
+            self.page = Page::Individual;
         }
     }
-
-    /// Naar de verkooppagina met deze speler gekozen; de vraagprijs begint bij zijn waarde.
-    fn start_sale(&mut self, uid: u32) {
-        let value = self.live.squad.iter().find(|p| p.get("uid").and_then(|v| v.as_u64()) == Some(uid as u64)).and_then(|p| p.get("value")).and_then(|v| v.as_i64()).unwrap_or(0);
-        self.live.sell.player = Some(uid);
-        self.live.sell.buy = false;
-        self.live.sell.plan = None;
-        self.live.sell.status.clear();
-        self.live.sell.fee_input = format!("{:.1}", value as f64 * self.settings.rate as f64 / 1e6);
-        self.page = Page::Sell;
-    }
-
-    // -------------------------------------------------------------------- verkopen
 
     // -------------------------------------------------------------------- tactiek
 
@@ -2074,479 +2251,6 @@ impl App {
         );
     }
 
-    fn page_sell(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let busy = self.live.busy() || self.live.sell_busy();
-        let connected = self.live.connected;
-        let rate = self.settings.rate as f64;
-        let mut undo = false;
-        let buying = self.live.sell.buy;
-        theme::page_header(
-            ui,
-            t!("Transferler", "Transfers"),
-            if buying {
-                t!(
-                    "Başka bir kulüpten bir oyuncuyu doğrudan A takımınıza getirin. Bonservis bedelini siz ödersiniz.",
-                    "Bring a player from another club directly into your first team. You pay the transfer fee."
-                )
-            } else {
-                t!(
-                    "Bir oyuncuyu istediğiniz bir kulübe doğrudan satın. Bonservis bedeli anında hesaba işlenir.",
-                    "Sell a player directly to any club. The transfer fee is credited immediately."
-                )
-            },
-            |ui| {
-                if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Geri Al", "Undo"), connected && !busy).clicked() {
-                    undo = true;
-                }
-            },
-        );
-        if undo {
-            self.live.sell.plan = None;
-            self.live.refresh(ctx, t!("geri al", "undo"), Some(json!({"cmd": "undo"})));
-        }
-        let (m, e) = (self.live.status.clone(), self.live.status_error);
-        if !m.is_empty() && (e || undo) {
-            self.status_line(ui, &m, e);
-        }
-        let (m, e) = (self.live.sell.status.clone(), self.live.sell.error);
-        self.status_line(ui, &m, e);
-        if !connected {
-            self.connect_card(ui, ctx);
-            return;
-        }
-        let mut buy = self.live.sell.buy;
-        if theme::segmented(ui, &mut buy, &[(false, t!("Sat", "Sell")), (true, t!("Satın Al", "Buy"))]) {
-            self.live.sell.buy = buy;
-            self.live.sell.plan = None;
-            self.live.sell.status.clear();
-        }
-        ui.add_space(10.0);
-        if self.live.sell.buy {
-            self.page_buy(ui, ctx);
-            return;
-        }
-
-        let eur = |pounds: i64| format!("€ {}", money((pounds as f64 * rate) as i64));
-        let squad = self.live.squad.clone();
-        let chosen = self.live.sell.player.and_then(|uid| squad.iter().find(|p| p.get("uid").and_then(|v| v.as_u64()) == Some(uid as u64)).cloned());
-        let mut pick: Option<u32> = None;
-        let mut search = false;
-        let mut check: Option<(u32, u32, i64, Option<i64>)> = None;
-        let mut confirm: Option<(u32, u32, i64, Option<i64>)> = None;
-
-        ui.columns(2, |cols| {
-            // 1. speler
-            theme::card(&mut cols[0], |ui| {
-                ui.label(theme::h2(t!("1 · Oyuncu", "1 · Player")));
-                ui.label(theme::faint(t!("Satmak istediğiniz oyuncuyu seçin.", "Select the player you want to sell.")));
-                ui.add_space(6.0);
-                ScrollArea::vertical().id_salt("sell_players").max_height(430.0).show(ui, |ui| {
-                    let mut sorted = squad.clone();
-                    sorted.sort_by_key(|p| std::cmp::Reverse(p.get("value").and_then(|v| v.as_i64()).unwrap_or(0)));
-                    for p in &sorted {
-                        let uid = p.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let coach = p.get("player_coach").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let value = p.get("value").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let until = p.get("contract_ends").and_then(|d| d.get("year")).and_then(|y| y.as_u64());
-                        let selected = self.live.sell.player == Some(uid);
-                        ui.horizontal(|ui| {
-                            let label = if coach {
-                                t!(format!("{name} · oyuncu-antrenör"), format!("{name} · player-coach"))
-                            } else {
-                                name.to_string()
-                            };
-                            let r = ui.add_enabled(!coach, egui::SelectableLabel::new(selected, RichText::new(label).size(14.0)));
-                            if r.clicked() {
-                                pick = Some(uid);
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if let Some(y) = until {
-                                    ui.label(theme::faint(t!(format!("bitiş: {y}"), format!("until {y}"))));
-                                }
-                                ui.label(RichText::new(eur(value)).color(theme::TEXT));
-                                if p.get("listed").and_then(|v| v.as_u64()).unwrap_or(0) & 1 == 1 {
-                                    theme::pill(ui, t!("transfer listesinde", "transfer listed"), theme::WARNING);
-                                }
-                            });
-                        });
-                    }
-                });
-            });
-
-            // 2. koper en 3. bedrag
-            let ui = &mut cols[1];
-            theme::card(ui, |ui| {
-                ui.label(theme::h2(t!("2 · Alıcı Kulüp", "2 · Buying Club")));
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let w = (ui.available_width() - 75.0).max(120.0);
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.live.sell.query)
-                            .hint_text(t!("Bir kulüp arayın, örn. AC Milan", "Search a club, e.g. AC Milan"))
-                            .desired_width(w),
-                    );
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        search = true;
-                    }
-                    if theme::small_button(ui, t!("Ara", "Search"), !busy && self.live.sell.query.trim().len() >= 2).clicked() {
-                        search = true;
-                    }
-                });
-                let q = self.live.sell.query.trim().to_string();
-                if q.len() >= 3 && q != self.live.sell.searched && !self.live.sell_busy() {
-                    search = true;
-                }
-                ui.add_space(4.0);
-                let clubs = self.live.sell.clubs.clone();
-                for c in clubs.iter().take(8) {
-                    let uid = c.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-                    let selected = self.live.sell.club.as_ref().is_some_and(|(u, _)| *u == uid);
-                    ui.horizontal(|ui| {
-                        if ui.add(egui::SelectableLabel::new(selected, RichText::new(&name).size(14.0))).clicked() {
-                            self.live.sell.club = Some((uid, name.clone()));
-                            self.live.sell.plan = None;
-                        }
-                        if c.get("women").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            theme::pill(ui, t!("kadınlar", "women"), theme::INFO);
-                        }
-                    });
-                }
-                if clubs.is_empty() && !self.live.sell.searched.is_empty() && !self.live.sell_busy() {
-                    ui.label(theme::faint(t!("Kulüp bulunamadı.", "No clubs found.")));
-                }
-            });
-            ui.add_space(12.0);
-            theme::card(ui, |ui| {
-                ui.label(theme::h2(t!("3 · Bonservis Bedeli", "3 · Transfer Fee")));
-                ui.add_space(4.0);
-                let value = chosen.as_ref().and_then(|p| p.get("value")).and_then(|v| v.as_i64()).unwrap_or(0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.fee_input).hint_text("10").desired_width(90.0));
-                    ui.label(t!("Mn €", "M €"));
-                    for (label, f) in [(t!("değeri", "value"), 1.0), ("×1.5", 1.5), ("×2", 2.0), ("×3", 3.0)] {
-                        if theme::small_button(ui, label, value > 0).clicked() {
-                            self.live.sell.fee_input = format!("{:.1}", value as f64 * f * rate / 1e6);
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(t!("Yeni maaş", "New wage"));
-                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.wage_input).hint_text(t!("değişmez", "unchanged")).desired_width(90.0));
-                    ui.label(t!("B € / hf", "K € / wk"));
-                });
-                let fee = self.live.sell.fee_input.replace(',', ".").trim().parse::<f64>().ok().map(|m| (m * 1e6 / rate).round() as i64);
-                let wage = self.live.sell.wage_input.replace(',', ".").trim().parse::<f64>().ok().map(|k| (k * 1e3 / rate).round() as i64);
-                let key = match (self.live.sell.player, &self.live.sell.club, fee) {
-                    (Some(p), Some((c, _)), Some(f)) if f >= 0 => Some((p, *c, f, wage)),
-                    _ => None,
-                };
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if theme::button(ui, icon::MAGNIFYING_GLASS, t!("Kontrol Et", "Verify"), key.is_some() && !busy).clicked() {
-                        check = key;
-                    }
-                    let ready = self.live.sell.plan.as_ref().is_some_and(|(v, k)| Some(*k) == key && v.get("allowed").and_then(|a| a.as_bool()) == Some(true));
-                    let label = match (&chosen, &self.live.sell.club) {
-                        (Some(p), Some((_, c))) => t!(
-                            format!("{} oyuncusunu {} kulübüne sat", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c),
-                            format!("Sell {} to {}", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c)
-                        ),
-                        _ => t!("Sat", "Sell").to_string(),
-                    };
-                    if theme::primary_button(ui, icon::HANDSHAKE, &label, ready && !busy).clicked() {
-                        confirm = key;
-                    }
-                    if self.live.sell_busy() {
-                        ui.spinner();
-                    }
-                });
-                if let Some((v, k)) = &self.live.sell.plan {
-                    if Some(*k) == key {
-                        ui.add_space(8.0);
-                        let s = |n: &str| v.get(n).and_then(|x| x.as_str()).unwrap_or("?").to_string();
-                        let i = |n: &str| v.get(n).and_then(|x| x.as_i64()).unwrap_or(0);
-                        let b = |n: &str| v.get(n).and_then(|x| x.as_bool()).unwrap_or(false);
-                        let mut lines = vec![format!("{} oyuncusu {} karşılığında {} kulübüne gidiyor.", s("player"), eur(i("fee")), s("to"))];
-                        lines.push(if b("buyer_pays") {
-                            format!("{} kendi bakiyesinden ve transfer bütçesinden öder.", s("to"))
-                        } else {
-                            format!("{} kulübünün kaydınızda tam finans verisi yok: parayı yalnızca siz alırsınız.", s("to"))
-                        });
-                        lines.push(format!("Bakiyeniz {} ve transfer bütçeniz {} olur.", eur(i("balance_after")), eur(i("transfer_budget_after"))));
-                        if i("selections") > 0 {
-                            lines.push(format!("{} kadro seçimindeki yeri boşaltılır.", i("selections")));
-                        }
-                        if b("was_captain") {
-                            lines.push("Takım kaptanıydı: kaptanlık pazubandı boşa çıkar.".into());
-                        }
-                        if !b("allowed") {
-                            lines.push("Bu FM sürümü test edilmedi: önce Ayarlar'dan değişikliklere izin verin.".into());
-                        }
-                        for l in lines {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(theme::ic(icon::CHECK_CIRCLE).color(theme::SUCCESS));
-                                ui.label(l);
-                            });
-                        }
-                    }
-                }
-            });
-        });
-        ui.add_space(12.0);
-        theme::card(ui, |ui| {
-            ui.label(theme::h2("Bilmekte Fayda Var"));
-            ui.add_space(4.0);
-            for l in [
-                "Bu bir teklif değil, doğrudan satıştır: FM transferi haberlere veya transfer geçmişine eklemez.",
-                "Oyuncu alıcı kulüpte bugünden itibaren aynı sözleşmeyi (veya yeni maaşı) forma numarası olmadan alır.",
-                "Oyuna devam etmediğiniz sürece Geri Al her şeyi eski haline döndürür. Önce yedek alın ve yalnızca her şey doğruysa kaydedin.",
-                "Oyuncu-antrenörler ve kiralık oyuncular (henüz) satılamaz.",
-            ] {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(theme::ic(icon::INFO).color(theme::INFO));
-                    ui.label(theme::dim(l));
-                });
-            }
-        });
-
-        if let Some(uid) = pick {
-            self.start_sale(uid);
-        }
-        if search {
-            self.live.search_clubs(ctx);
-        }
-        if let Some((p, c, f, w)) = check {
-            self.live.plan_sale(ctx, p, c, f, w);
-        }
-        if let Some((p, c, f, w)) = confirm {
-            self.live.sell_now(ctx, p, c, f, w);
-        }
-    }
-
-    /// Kopen: een speler van een andere club naar je eerste elftal halen.
-    fn page_buy(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let busy = self.live.busy() || self.live.sell_busy();
-        let rate = self.settings.rate as f64;
-        let eur = |pounds: i64| format!("€ {}", money((pounds as f64 * rate) as i64));
-        let club = self.live.sell.club.clone();
-        let squad = self.live.sell.buy_squad.clone();
-        let chosen = self.live.sell.buy_player.and_then(|uid| squad.iter().find(|p| p.get("uid").and_then(|v| v.as_u64()) == Some(uid as u64)).cloned());
-        let mut search = false;
-        let mut load: Option<u32> = None;
-        let mut pick: Option<(u32, i64, Option<i64>)> = None;
-        let mut check: Option<(u32, u32, i64, Option<i64>)> = None;
-        let mut confirm: Option<(u32, u32, i64, Option<i64>)> = None;
-
-        ui.columns(2, |cols| {
-            // 1. club
-            theme::card(&mut cols[0], |ui| {
-                ui.label(theme::h2(t!("1 · Kulüp", "1 · Club")));
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let w = (ui.available_width() - 75.0).max(120.0);
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.live.sell.query)
-                            .hint_text(t!("Bir kulüp arayın, örn. Real Madrid", "Search a club, e.g. Real Madrid"))
-                            .desired_width(w),
-                    );
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        search = true;
-                    }
-                    if theme::small_button(ui, t!("Ara", "Search"), !busy && self.live.sell.query.trim().len() >= 2).clicked() {
-                        search = true;
-                    }
-                });
-                let q = self.live.sell.query.trim().to_string();
-                if q.len() >= 3 && q != self.live.sell.searched && !self.live.sell_busy() {
-                    search = true;
-                }
-                ui.add_space(4.0);
-                let clubs = self.live.sell.clubs.clone();
-                for c in clubs.iter().take(8) {
-                    let uid = c.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-                    let selected = self.live.sell.club.as_ref().is_some_and(|(u, _)| *u == uid);
-                    ui.horizontal(|ui| {
-                        if ui.add(egui::SelectableLabel::new(selected, RichText::new(&name).size(14.0))).clicked() {
-                            self.live.sell.club = Some((uid, name.clone()));
-                            self.live.sell.plan = None;
-                            load = Some(uid);
-                        }
-                        if c.get("women").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            theme::pill(ui, t!("kadınlar", "women"), theme::INFO);
-                        }
-                    });
-                }
-                if clubs.is_empty() && !self.live.sell.searched.is_empty() && !self.live.sell_busy() {
-                    ui.label(theme::faint(t!("Kulüp bulunamadı.", "No clubs found.")));
-                }
-            });
-            cols[0].add_space(12.0);
-            // 2. speler
-            theme::card(&mut cols[0], |ui| {
-                ui.label(theme::h2(t!("2 · Oyuncu", "2 · Player")));
-                match &club {
-                    None => {
-                        ui.label(theme::faint(t!("Önce bir kulüp seçin.", "Select a club first.")));
-                    }
-                    Some((_, name)) => {
-                        ui.label(theme::faint(t!(
-                            format!("{name} A takımı, en değerliler başta."),
-                            format!("{name} first team, highest value first.")
-                        )));
-                        if squad.is_empty() && self.live.sell_busy() {
-                            ui.spinner();
-                        }
-                        ui.add_space(6.0);
-                        ScrollArea::vertical().id_salt("buy_players").max_height(360.0).show(ui, |ui| {
-                            for p in &squad {
-                                let uid = p.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                                let coach = p.get("player_coach").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                let value = p.get("value").and_then(|v| v.as_i64()).unwrap_or(0);
-                                let wage = p.get("wage").and_then(|v| v.as_i64());
-                                let until = p.get("contract_ends").and_then(|d| d.get("year")).and_then(|y| y.as_u64());
-                                let selected = self.live.sell.buy_player == Some(uid);
-                                ui.horizontal(|ui| {
-                                    let label = if coach {
-                                        t!(format!("{pname} · oyuncu-antrenör"), format!("{pname} · player-coach"))
-                                    } else {
-                                        pname.to_string()
-                                    };
-                                    if ui.add_enabled(!coach, egui::SelectableLabel::new(selected, RichText::new(label).size(14.0))).clicked() {
-                                        pick = Some((uid, value, wage));
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if let Some(y) = until {
-                                            ui.label(theme::faint(t!(format!("bitiş: {y}"), format!("until {y}"))));
-                                        }
-                                        if let Some(w) = wage {
-                                            ui.label(theme::faint(format!("{} / {}", eur(w), t!("hf", "wk"))));
-                                        }
-                                        ui.label(RichText::new(eur(value)).color(theme::TEXT));
-                                    });
-                                });
-                            }
-                        });
-                    }
-                }
-            });
-
-            // 3. bedrag
-            let ui = &mut cols[1];
-            theme::card(ui, |ui| {
-                ui.label(theme::h2(t!("3 · Bonservis Bedeli", "3 · Transfer Fee")));
-                ui.add_space(4.0);
-                let value = chosen.as_ref().and_then(|p| p.get("value")).and_then(|v| v.as_i64()).unwrap_or(0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.fee_input).hint_text("10").desired_width(90.0));
-                    ui.label(t!("Mn €", "M €"));
-                    for (label, f) in [(t!("değeri", "value"), 1.0), ("×0.5", 0.5), ("×1.5", 1.5), ("0", 0.0)] {
-                        if theme::small_button(ui, label, value > 0).clicked() {
-                            self.live.sell.fee_input = format!("{:.1}", value as f64 * f * rate / 1e6);
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(t!("Sizdeki maaşı", "Wage at your club"));
-                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.wage_input).hint_text(t!("değişmez", "unchanged")).desired_width(90.0));
-                    ui.label(t!("B € / hf", "K € / wk"));
-                });
-                let fee = self.live.sell.fee_input.replace(',', ".").trim().parse::<f64>().ok().map(|m| (m * 1e6 / rate).round() as i64);
-                let wage = self.live.sell.wage_input.replace(',', ".").trim().parse::<f64>().ok().map(|k| (k * 1e3 / rate).round() as i64);
-                let key = match (self.live.sell.buy_player, &self.live.sell.club, fee) {
-                    (Some(p), Some((c, _)), Some(f)) if f >= 0 => Some((p, *c, f, wage)),
-                    _ => None,
-                };
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if theme::button(ui, icon::MAGNIFYING_GLASS, t!("Kontrol Et", "Verify"), key.is_some() && !busy).clicked() {
-                        check = key;
-                    }
-                    let ready = self.live.sell.plan.as_ref().is_some_and(|(v, k)| Some(*k) == key && v.get("allowed").and_then(|a| a.as_bool()) == Some(true));
-                    let label = match (&chosen, &club) {
-                        (Some(p), Some((_, c))) => t!(
-                            format!("{} oyuncusunu {} kulübünden satın al", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c),
-                            format!("Buy {} from {}", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c)
-                        ),
-                        _ => t!("Satın Al", "Buy").to_string(),
-                    };
-                    if theme::primary_button(ui, icon::USER_PLUS, &label, ready && !busy).clicked() {
-                        confirm = key;
-                    }
-                    if self.live.sell_busy() {
-                        ui.spinner();
-                    }
-                });
-                if let Some((v, k)) = &self.live.sell.plan {
-                    if Some(*k) == key {
-                        ui.add_space(8.0);
-                        let s = |n: &str| v.get(n).and_then(|x| x.as_str()).unwrap_or("?").to_string();
-                        let i = |n: &str| v.get(n).and_then(|x| x.as_i64()).unwrap_or(0);
-                        let b = |n: &str| v.get(n).and_then(|x| x.as_bool()).unwrap_or(false);
-                        let mut lines = vec![format!("{} oyuncusu {} karşılığında {} kulübünden A takımınıza geliyor.", s("player"), eur(i("fee")), s("from"))];
-                        lines.push(if b("buyer_pays") {
-                            format!("{} parayı bakiyesine ve transfer bütçesine alır.", s("from"))
-                        } else {
-                            format!("{} kulübünün kaydınızda tam finans verisi yok: yalnızca siz ödersiniz.", s("from"))
-                        });
-                        lines.push(format!("Bakiyeniz {} ve transfer bütçeniz {} olur.", eur(i("balance_after")), eur(i("transfer_budget_after"))));
-                        if b("was_captain") {
-                            lines.push(format!("{} kulübünde kaptandı; kaptanlık pazubandı orada boşa çıkar.", s("from")));
-                        }
-                        if !b("allowed") {
-                            lines.push("Bu FM sürümü test edilmedi: önce Ayarlar'dan değişikliklere izin verin.".into());
-                        }
-                        for l in lines {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(theme::ic(icon::CHECK_CIRCLE).color(theme::SUCCESS));
-                                ui.label(l);
-                            });
-                        }
-                    }
-                }
-            });
-        });
-        ui.add_space(12.0);
-        theme::card(ui, |ui| {
-            ui.label(theme::h2("Bilmekte Fayda Var"));
-            ui.add_space(4.0);
-            for l in [
-                "Bu bir teklif değil, doğrudan transferdir: FM transferi haberlere veya transfer geçmişine eklemez.",
-                "Oyuncu bugünden itibaren kulübünüzde mevcut sözleşmesini (veya yeni maaşını) forma numarası olmadan sürdürür. FM içinde ona bir forma numarası verin ve gereken yerlere kaydedin.",
-                "Oyuna devam etmediğiniz sürece Geri Al her şeyi eski haline döndürür. Önce yedek alın ve yalnızca her şey doğruysa kaydedin.",
-                "Oyuncu-antrenörler ve kiralık oyuncular (henüz) transfer edilemez.",
-            ] {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(theme::ic(icon::INFO).color(theme::INFO));
-                    ui.label(theme::dim(l));
-                });
-            }
-        });
-        if search {
-            self.live.search_clubs(ctx);
-        }
-        if let Some(uid) = load {
-            self.live.load_club_squad(ctx, uid);
-        }
-        if let Some((uid, value, wage)) = pick {
-            self.live.sell.buy_player = Some(uid);
-            self.live.sell.plan = None;
-            self.live.sell.fee_input = format!("{:.1}", value as f64 * rate / 1e6);
-            self.live.sell.wage_input = wage.map(|w| format!("{:.1}", w as f64 * rate / 1e3)).unwrap_or_default();
-        }
-        if let Some((p, c, f, w)) = check {
-            self.live.plan_buy(ctx, p, c, f, w);
-        }
-        if let Some((p, c, f, w)) = confirm {
-            self.live.buy_now(ctx, p, c, f, w);
-        }
-    }
-
     // -------------------------------------------------------------------- instellingen
 
     fn page_settings(&mut self, ui: &mut Ui) {
@@ -2567,11 +2271,15 @@ impl App {
                     }
                 });
                 ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(theme::ic(icon::COINS).color(theme::ACCENT));
-                    ui.label(t!("£ Başına € Kuru", "€ per £ Rate"));
-                    dirty |= ui.add(egui::DragValue::new(&mut self.settings.rate).range(0.5..=2.0).speed(0.01).fixed_decimals(2)).changed();
-                });
+                dirty |= ui
+                    .checkbox(
+                        &mut self.settings.auto_individual,
+                        t!(
+                            "Bireysel antrenmanları her güncellemede otomatik uygula",
+                            "Automatically apply individual training on every update"
+                        ),
+                    )
+                    .changed();
                 ui.add_space(4.0);
                 dirty |= ui
                     .checkbox(
@@ -2596,6 +2304,30 @@ impl App {
                             }
                         });
                 });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(t!("Özel Kamp Modu:", "Special Camp Mode:"));
+                    egui::ComboBox::from_id_salt("settings_camp_mode")
+                        .selected_text(self.settings.planner.camp_mode.label())
+                        .width(210.0)
+                        .show_ui(ui, |ui| {
+                            for c in planner::CampMode::ALL {
+                                if ui.selectable_value(&mut self.settings.planner.camp_mode, c, c.label()).changed() {
+                                    dirty = true;
+                                }
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+                dirty |= ui
+                    .checkbox(
+                        &mut self.settings.planner.auto_smart_load,
+                        t!(
+                            "Kadro kondisyonuna göre akıllı dinlenme yükü ayarı",
+                            "Smart rest load adjustment by squad condition"
+                        ),
+                    )
+                    .changed();
                 ui.add_space(4.0);
                 ui.add(
                     egui::Label::new(RichText::new(t!(
@@ -2824,6 +2556,7 @@ impl eframe::App for App {
         self.live.allow_untested = self.settings.allow_untested;
         self.live.choice = (self.settings.manager_club, self.settings.training_team);
         self.live.keep_understanding = self.settings.keep_understanding;
+        self.live.auto_individual = self.settings.auto_individual;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
         self.sidebar(ctx);
         egui::CentralPanel::default()
@@ -2844,11 +2577,10 @@ impl eframe::App for App {
                     match self.page {
                         Page::Overview => self.page_overview(ui, ctx),
                         Page::Training => self.page_training(ui, ctx),
+                        Page::Individual => self.page_individual(ui, ctx),
                         Page::Planning => self.page_planning(ui),
-                        Page::Club => self.page_club(ui, ctx),
                         Page::Squad => self.page_squad(ui, ctx),
                         Page::Tactics => self.page_tactics(ui, ctx),
-                        Page::Sell => self.page_sell(ui, ctx),
                         Page::Settings => self.page_settings(ui),
                     }
                     ui.add_space(20.0);
