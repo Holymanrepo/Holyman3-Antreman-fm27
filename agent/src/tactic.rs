@@ -201,47 +201,179 @@ fn player(p: &PlayerInfo) -> Option<Player> {
     })
 }
 
-pub fn tactics() -> Result<Tactics, String> {
-    let squad = game::squad()?;
-    let lay = game::layout();
-    let by_person: HashMap<u32, u32> = squad.iter().filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid))).collect();
+static CACHED_OBJS: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
+
+fn inspect_obj(
+    obj: u64,
+    vts: &[u64],
+    by_person: &HashMap<u32, u32>,
+) -> Option<(usize, u8, Vec<u32>, Option<Vec<u64>>)> {
+    let vt = mem::u64_at(obj)?;
+    if !vts.contains(&vt) {
+        return None;
+    }
+    let h = mem::read_bytes(obj + SEL_LIST, 16)?;
+    let (begin, end) = (
+        u64::from_le_bytes(h[..8].try_into().unwrap()),
+        u64::from_le_bytes(h[8..].try_into().unwrap()),
+    );
+    let raw = mem::read_bytes(obj + SEL_SLOTS, SEL_COUNT * 4)?;
+    let ids: Vec<u32> = raw
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let filled = ids[..SLOTS].iter().filter(|id| **id != EMPTY_SLOT).count();
+    let mine = ids[..SLOTS]
+        .iter()
+        .filter(|id| by_person.contains_key(id))
+        .count();
+    if mine == 0 || 2 * mine <= filled {
+        return None;
+    }
+    let cur = mem::read_bytes(obj + SEL_CURRENT, 1)
+        .map(|b| b[0])
+        .unwrap_or(0);
+    let blocks = if mem::is_ptr(begin)
+        && end >= begin + 8
+        && end <= begin + 24
+        && (end - begin) % 8 == 0
+    {
+        mem::read_bytes(begin, (end - begin) as usize).map(|lb| {
+            lb.chunks_exact(8)
+                .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                .collect::<Vec<u64>>()
+        })
+    } else {
+        None
+    };
+    Some((mine, cur, ids, blocks))
+}
+
+fn find_club_tactic_objects(
+    by_person: &HashMap<u32, u32>,
+) -> Result<(u64, u8, Vec<u32>, Vec<u64>, Option<(u64, u8, Vec<u32>)>), String> {
     let img = mem::game_plugin().ok_or("game_plugin yüklenmedi")?;
     let vts = rtti::vtables_of(&img, &rtti::decorated("simatch", "PREPARED_TACTICS_CREATOR_ARRAY"));
     if vts.is_empty() {
         return Err("Kadro seçimleri bulunamadı".into());
     }
-    // de opstelling van de club: de kopie met de meeste eigen spelers in de basiself
-    let mut best: Option<(usize, u64, Vec<u32>, Vec<u64>)> = None;
-    for obj in rtti::instances(&vts, 4_000) {
-        let Some(h) = mem::read_bytes(obj + SEL_LIST, 16) else { continue };
-        let (begin, end) = (u64::from_le_bytes(h[..8].try_into().unwrap()), u64::from_le_bytes(h[8..].try_into().unwrap()));
-        if !mem::is_ptr(begin) || end < begin + 8 || end > begin + 24 || (end - begin) % 8 != 0 {
-            continue;
+
+    // Fast path: check cached pointers first (< 1ms)
+    if let Ok(guard) = CACHED_OBJS.lock() {
+        let (b_addr, l_addr) = *guard;
+        if b_addr != 0 {
+            if let Some((_, b_cur, b_ids, Some(blocks))) = inspect_obj(b_addr, &vts, by_person) {
+                let live = if l_addr != 0 && l_addr != b_addr {
+                    inspect_obj(l_addr, &vts, by_person).map(|(_, l_cur, l_ids, _)| (l_addr, l_cur, l_ids))
+                } else {
+                    None
+                };
+                return Ok((b_addr, b_cur, b_ids, blocks, live));
+            }
         }
-        let Some(raw) = mem::read_bytes(obj + SEL_SLOTS, SEL_COUNT * 4) else { continue };
-        let ids: Vec<u32> = raw.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
-        // van de club als de meeste gevulde plekken van de basiself eigen spelers zijn (een
-        // selectie van een nationaal team niet), zoals bij verkopen
-        let filled = ids[..SLOTS].iter().filter(|id| **id != EMPTY_SLOT).count();
-        let mine = ids[..SLOTS].iter().filter(|id| by_person.contains_key(id)).count();
-        if mine == 0 || 2 * mine <= filled || best.as_ref().is_some_and(|b| b.0 >= mine) {
-            continue;
-        }
-        let Some(lb) = mem::read_bytes(begin, (end - begin) as usize) else { continue };
-        let blocks: Vec<u64> = lb.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
-        best = Some((mine, obj, ids, blocks));
     }
-    let (_, obj, ids, blocks) = best.ok_or("Kulübünüzün kadro dizilişi bulunamadı: FM içinde Taktik ekranını açıp ilk 11'inizi seçin")?;
-    let tactics: Vec<Tactic> = blocks.iter().enumerate().filter(|(_, b)| mem::is_ptr(**b)).filter_map(|(i, b)| read_tactic(i, *b, &ids, &by_person)).collect();
+
+    let mut best_with_blocks: Option<(usize, u64, u8, Vec<u32>, Vec<u64>)> = None;
+    let mut best_live_sel: Option<(usize, u64, u8, Vec<u32>)> = None;
+
+    for obj in rtti::instances(&vts, 4_000) {
+        let Some((mine, cur, ids, blocks_opt)) = inspect_obj(obj, &vts, by_person) else {
+            continue;
+        };
+        if let Some(blocks) = blocks_opt {
+            if best_with_blocks.as_ref().is_none_or(|b| mine > b.0) {
+                best_with_blocks = Some((mine, obj, cur, ids, blocks));
+            }
+        } else if (cur as usize) < 3 {
+            // Live selection copy (begin == 0, end == 0) holds the active UI tactic tab & live 11
+            if best_live_sel.as_ref().is_none_or(|b| mine > b.0) {
+                best_live_sel = Some((mine, obj, cur, ids));
+            }
+        }
+    }
+
+    let (_, b_addr, b_cur, b_ids, blocks) = best_with_blocks.ok_or(
+        "Kulübünüzün kadro dizilişi bulunamadı: FM içinde Taktik ekranını açıp ilk 11'inizi seçin",
+    )?;
+    let live = best_live_sel.map(|(_, l_addr, l_cur, l_ids)| (l_addr, l_cur, l_ids));
+
+    if let Ok(mut guard) = CACHED_OBJS.lock() {
+        *guard = (b_addr, live.as_ref().map(|l| l.0).unwrap_or(0));
+    }
+
+    Ok((b_addr, b_cur, b_ids, blocks, live))
+}
+
+pub fn tactics() -> Result<Tactics, String> {
+    let squad = game::squad()?;
+    let lay = game::layout();
+    let by_person: HashMap<u32, u32> = squad
+        .iter()
+        .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
+        .collect();
+    let (_b_addr, b_cur, b_ids, blocks, live) = find_club_tactic_objects(&by_person)?;
+    let (cur_raw, ids) = match live {
+        Some((_, l_cur, l_ids)) => (l_cur as usize, l_ids),
+        None => (b_cur as usize, b_ids),
+    };
+    let tactics: Vec<Tactic> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| mem::is_ptr(**b))
+        .filter_map(|(i, b)| read_tactic(i, *b, &ids, &by_person))
+        .collect();
     if tactics.is_empty() {
         return Err("Taktik okunamıyor".into());
     }
-    let cur = mem::read_bytes(obj + SEL_CURRENT, 1).map(|b| b[0] as usize).unwrap_or(0);
-    let current = tactics.iter().position(|t| t.index == cur).unwrap_or(0);
+    let current = tactics.iter().position(|t| t.index == cur_raw).unwrap_or(0);
     Ok(Tactics {
         current,
         tactics,
         players: squad.iter().filter_map(player).collect(),
-        bench: ids[SLOTS..].iter().filter(|id| **id != EMPTY_SLOT).filter_map(|id| by_person.get(id)).copied().collect(),
+        bench: ids[SLOTS..]
+            .iter()
+            .filter(|id| **id != EMPTY_SLOT)
+            .filter_map(|id| by_person.get(id))
+            .copied()
+            .collect(),
     })
+}
+
+/// Uygulamadan seçilen taktiği (0, 1 veya 2) FM27 belleğindeki aktif taktik işaretçisine yazar.
+pub fn set_active_tactic(index: usize) -> Result<usize, String> {
+    if index >= 3 {
+        return Err("Geçersiz taktik indeksi".into());
+    }
+    let squad = game::squad()?;
+    let lay = game::layout();
+    let by_person: HashMap<u32, u32> = squad
+        .iter()
+        .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
+        .collect();
+    let (b_addr, _b_cur, _b_ids, _blocks, live) = find_club_tactic_objects(&by_person)?;
+    let mut targets = vec![b_addr];
+    if let Some((l_addr, _, _)) = live {
+        if l_addr != 0 && !targets.contains(&l_addr) {
+            targets.push(l_addr);
+        }
+        // Check sibling selection object (e.g. +0x2170) or header object (-0x5808) if present
+        for delta in [0x2170u64, 0x5808u64] {
+            for cand in [l_addr.wrapping_add(delta), l_addr.wrapping_sub(delta)] {
+                if let Some(cur_bytes) = mem::read_bytes(cand + SEL_CURRENT, 2) {
+                    if cur_bytes[0] < 3 && cur_bytes[1] == 0xFF && !targets.contains(&cand) {
+                        targets.push(cand);
+                    }
+                }
+            }
+        }
+    }
+    let new_byte = [index as u8];
+    for addr in targets {
+        if let Some(cur_bytes) = mem::read_bytes(addr + SEL_CURRENT, 2) {
+            if cur_bytes[0] < 3 && cur_bytes[1] == 0xFF {
+                let _ = mem::write_checked(addr + SEL_CURRENT, &[cur_bytes[0]], &new_byte);
+            }
+        }
+    }
+    Ok(index)
 }

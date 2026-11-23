@@ -207,6 +207,10 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
         }
         "understanding" => understanding::understanding().map(|u| json!(u)),
         "tactics" => tactic::tactics().map(|t| json!(t)),
+        "set_tactic" => {
+            let idx = req.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            tactic::set_active_tactic(idx).map(|i| json!({"current": i}))
+        }
         "max_understanding" => {
             let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
             understanding::maximise(&uids(req), dry).map(|m| json!(m))

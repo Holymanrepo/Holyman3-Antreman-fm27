@@ -156,6 +156,7 @@ struct App {
     live: LiveState,
     /// de tactiek die de tactiekpagina toont (None: de tactiek die in FM in gebruik is)
     tactic_pick: Option<usize>,
+    last_game_tactic: Option<usize>,
     tactics_asked: bool,
     frames: u32,
     logo_tex: Option<egui::TextureHandle>,
@@ -264,6 +265,7 @@ impl App {
             calendar,
             year: Vec::new(),
             tactic_pick: None,
+            last_game_tactic: None,
             tactics_asked: false,
             live: {
                 let mut l = LiveState::default();
@@ -363,7 +365,10 @@ impl App {
         let mut mode_msg = String::new();
         if let Some(data) = &self.live.tactics {
             if !data.tactics.is_empty() {
-                let idx = data.current.min(data.tactics.len() - 1);
+                let idx = self
+                    .tactic_pick
+                    .filter(|i| *i < data.tactics.len())
+                    .unwrap_or_else(|| data.current.min(data.tactics.len() - 1));
                 let active = &data.tactics[idx];
                 let suggested = crate::tactics::suggest_tactic_mode(active);
                 self.settings.planner.tactic_mode = suggested;
@@ -376,7 +381,10 @@ impl App {
                     self.eff.set(Factor::PlayerRoleSuitability, avg_fit);
                     self.eff.set(Factor::PlayerCapability, avg_fit);
                 }
-                mode_msg = format!(" · Önerilen Tarz: {}", suggested.label());
+                mode_msg = t!(
+                    format!(" · Taktik {} · Önerilen Tarz: {}", active.index + 1, suggested.label()),
+                    format!(" · Tactic {} · Suggested Style: {}", active.index + 1, suggested.label())
+                );
             }
         } else if self.live.connected {
             self.live.load_tactics(ctx);
@@ -1821,15 +1829,14 @@ impl App {
             }
             return;
         };
-        let pick = self.tactic_pick.filter(|i| *i < data.tactics.len()).unwrap_or(data.current.min(data.tactics.len() - 1));
-        let tactic = &data.tactics[pick];
-        let in_use = pick == data.current.min(data.tactics.len() - 1);
-        let mut places = tx::places(tactic);
-        if !in_use {
-            for p in &mut places {
-                p.uid = None;
-            }
+        let cur_idx = data.current.min(data.tactics.len() - 1);
+        if self.last_game_tactic != Some(cur_idx) {
+            self.last_game_tactic = Some(cur_idx);
+            self.tactic_pick = Some(cur_idx);
         }
+        let pick = self.tactic_pick.filter(|i| *i < data.tactics.len()).unwrap_or(cur_idx);
+        let tactic = &data.tactics[pick];
+        let places = tx::places(tactic);
         let by_uid: std::collections::HashMap<u32, &tx::Player> = data.players.iter().map(|p| (p.uid, p)).collect();
         let in_eleven: std::collections::HashSet<u32> = places.iter().filter_map(|p| p.uid).collect();
         let mut order: Vec<usize> = (0..places.len()).collect();
@@ -1842,13 +1849,14 @@ impl App {
         let best_avg = if best.len() == places.len() { places.iter().zip(&best).map(|(pl, &j)| tx::fit(&data.players[j], pl)).sum::<f32>() / places.len() as f32 } else { avg };
 
         // welke tactiek
+        let mut switched_to: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
             let labels: Vec<String> = data
                 .tactics
                 .iter()
                 .map(|t| {
                     let mut l = t!(format!("Taktik {}", t.index + 1), format!("Tactic {}", t.index + 1));
-                    if t.index == data.tactics[data.current.min(data.tactics.len() - 1)].index {
+                    if t.index == data.tactics[cur_idx].index {
                         l.push_str(t!(" · kullanımda", " · active"));
                     }
                     l
@@ -1858,6 +1866,8 @@ impl App {
             let mut v = pick;
             if theme::segmented(ui, &mut v, &options) {
                 self.tactic_pick = Some(v);
+                self.last_game_tactic = Some(v);
+                switched_to = Some(v);
                 theme::restart_enter(ctx);
             }
             if !tactic.style.is_empty() {
@@ -1873,17 +1883,10 @@ impl App {
                 theme::ACCENT,
             );
         });
-        ui.add_space(12.0);
-        if !in_use {
-            ui.add(
-                egui::Label::new(theme::faint(t!(
-                    "Bu şu anda kullanımda olan taktik değil: FM ilk 11'inizi yalnızca aktif taktik için saklar. Bu nedenle aşağıda sadece bu taktik için en iyi 11 gösterilmektedir.",
-                    "This is not your currently active tactic: FM only stores your starting XI for the active tactic. Therefore only the best XI for this tactic is shown below."
-                )))
-                .wrap(),
-            );
-            ui.add_space(8.0);
+        if let Some(v) = switched_to {
+            self.live.select_tactic(ctx, v);
         }
+        ui.add_space(12.0);
 
         ui.columns(3, |c| {
             theme::stat_tile(&mut c[0], icon::STRATEGY, t!("Mevcut 11", "Current XI"), &format!("{avg:.0}"), t!("ortalama uyum", "average fit"), theme::rgb(level_color(avg)), Some(avg));
@@ -1941,10 +1944,10 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.label(theme::label_strong(&p.name));
                                 if p.injured {
-                                    theme::pill(ui, "sakat", theme::DANGER);
+                                    theme::pill(ui, t!("sakat", "injured"), theme::DANGER);
                                 }
                                 if p.banned {
-                                    theme::pill(ui, "cezalı", theme::WARNING);
+                                    theme::pill(ui, t!("cezalı", "banned"), theme::WARNING);
                                 }
                             });
                             ui.horizontal(|ui| {
@@ -1972,7 +1975,7 @@ impl App {
                             }
                         }
                         None => {
-                            ui.label(theme::faint("boş"));
+                            ui.label(theme::faint(t!("boş", "empty")));
                             ui.label(theme::faint("—"));
                             ui.label(theme::faint("—"));
                             ui.label(theme::faint("—"));
@@ -2035,7 +2038,7 @@ impl App {
                 let pl = &places[i];
                 let p = pl.uid.and_then(|u| by_uid.get(&u))?;
                 let (r, now, then) = tx::better_role(p, pl)?;
-                Some((p.name.clone(), tx::ip_role(pl.ip?)?.code, r.code, r.name, now, then))
+                Some((p.name.clone(), tx::ip_role(pl.ip?)?.code_str(), r.code_str(), r.name_str(), now, then))
             })
             .collect();
         theme::card(ui, |ui| {

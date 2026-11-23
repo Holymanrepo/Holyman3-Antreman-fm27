@@ -162,78 +162,139 @@ pub struct Role {
     pub bit: u8,
     pub code: &'static str,
     pub name: &'static str,
+    pub en_code: &'static str,
+    pub en_name: &'static str,
     pub line: Line,
     /// de attributen die voor de rol tellen (onze inschatting)
     pub attrs: &'static [&'static str],
 }
 
+impl Role {
+    pub fn code_str(&self) -> &'static str {
+        if crate::i18n::is_tr() { self.code } else { self.en_code }
+    }
+    pub fn name_str(&self) -> &'static str {
+        if crate::i18n::is_tr() { self.name } else { self.en_name }
+    }
+}
+
 macro_rules! role {
-    ($bit:expr, $code:expr, $name:expr, $line:ident, [$($a:ident),*]) => {
-        Role { bit: $bit, code: $code, name: $name, line: Line::$line, attrs: &[$(stringify!($a)),*] }
+    ($bit:expr, $code:expr, $name:expr, $en_code:expr, $en_name:expr, $line:ident, [$($a:ident),*]) => {
+        Role { bit: $bit, code: $code, name: $name, en_code: $en_code, en_name: $en_name, line: Line::$line, attrs: &[$(stringify!($a)),*] }
     };
 }
 
-/// Rollen met bal (Topla Roller - Türkçe).
+/// Rollen met bal (Topla Roller - Türkçe & English).
 pub const IP_ROLES: &[Role] = &[
-    role!(1, "STP", "Stoper", CentreBack, [heading, marking, tackling, positioning, jumping_reach, strength, anticipation, concentration, bravery, pace]),
-    role!(2, "BK", "Bek", WideBack, [tackling, marking, positioning, crossing, stamina, pace, work_rate, anticipation, teamwork, concentration]),
-    role!(3, "KB", "Kanat Bek", WideBack, [crossing, dribbling, stamina, pace, acceleration, work_rate, off_the_ball, tackling, teamwork, technique]),
-    role!(4, "DOS", "Defansif Orta Saha", DefMid, [tackling, positioning, anticipation, concentration, marking, teamwork, work_rate, stamina, passing, decisions, strength]),
-    role!(7, "KNT", "Kanat Oyuncusu", Wide, [crossing, dribbling, pace, acceleration, technique, agility, off_the_ball, flair, stamina]),
-    role!(9, "OOS", "Ofansif Orta Saha", AttMid, [first_touch, passing, technique, off_the_ball, vision, decisions, composure, long_shots, flair, anticipation, dribbling]),
-    role!(10, "GF", "Geriye Gelen Forvet", Striker, [first_touch, passing, technique, composure, decisions, off_the_ball, teamwork, vision, finishing, strength]),
-    role!(11, "SNT", "Santrfor", Striker, [finishing, off_the_ball, first_touch, composure, anticipation, heading, strength, pace, acceleration, technique, decisions]),
-    role!(12, "PKL", "Pasör Kaleci", Keeper, [handling, reflexes, one_on_ones, aerial_reach, command_of_area, positioning, concentration, passing, first_touch, composure, kicking, throwing, vision]),
-    role!(14, "İSTP", "İleri Çıkan Stoper", CentreBack, [passing, first_touch, composure, decisions, positioning, tackling, anticipation, dribbling, marking, heading]),
-    role!(15, "DOK", "Derin Oyun Kurucu", DefOrCentreMid, [passing, vision, first_touch, composure, decisions, technique, teamwork, anticipation, positioning]),
-    role!(16, "İYO", "İki Yönlü Orta Saha", CentreMid, [stamina, work_rate, passing, tackling, off_the_ball, teamwork, long_shots, strength, decisions, pace]),
-    role!(17, "OOK", "Ofansif Oyun Kurucu", CentreOrAttMid, [passing, vision, first_touch, technique, composure, decisions, flair, off_the_ball, teamwork]),
-    role!(19, "FÇ", "Fırsatçı Golcü", Striker, [finishing, off_the_ball, anticipation, composure, acceleration, first_touch, pace]),
-    role!(24, "PSTP", "Pasör Stoper", CentreBack, [heading, marking, tackling, positioning, jumping_reach, strength, anticipation, passing, first_touch, composure, vision, technique]),
-    role!(27, "KNF", "Kanat Forvet", Wide, [dribbling, finishing, first_touch, technique, off_the_ball, acceleration, pace, composure, anticipation, long_shots, agility]),
-    role!(29, "ÇSTP", "Çakılı Stoper", CentreBack, [heading, marking, tackling, positioning, strength, jumping_reach, bravery, aggression]),
-    role!(35, "SSÖ", "Savunma Önü Libero", DefMid, [positioning, tackling, marking, anticipation, concentration, composure, passing, decisions, strength, heading]),
-    role!(38, "OKB", "Ofansif Kanat Bek", WideBack, [crossing, dribbling, pace, acceleration, stamina, off_the_ball, flair, technique, work_rate]),
-    role!(40, "S9", "Sahte Dokuz", Striker, [first_touch, passing, technique, vision, dribbling, composure, decisions, off_the_ball, finishing, flair, agility]),
-    role!(43, "OKK", "Oyun Kurucu Kanat", Wide, [passing, vision, first_touch, technique, dribbling, decisions, composure, flair, off_the_ball]),
-    role!(44, "İKB", "İçe Kat Eden Kanat Bek", WideBack, [passing, first_touch, decisions, composure, tackling, positioning, teamwork, anticipation, technique]),
-    role!(45, "GNF", "Geniş Alan Forveti", Wide, [finishing, off_the_ball, pace, acceleration, dribbling, first_touch, composure, anticipation, heading]),
-    role!(46, "İYOK", "İki Yönlü Oyun Kurucu", CentreMid, [stamina, work_rate, passing, vision, technique, first_touch, composure, off_the_ball, teamwork, decisions]),
-    role!(48, "KOS", "Kanat Orta Saha", CentreMid, [passing, crossing, stamina, work_rate, off_the_ball, teamwork, first_touch, decisions]),
-    role!(52, "İBK", "İçe Kat Eden Bek", WideBack, [tackling, marking, positioning, heading, strength, concentration, passing, anticipation]),
-    role!(53, "GKL", "Geleneksel Kaleci", Keeper, [handling, reflexes, aerial_reach, one_on_ones, concentration, positioning, command_of_area, communication]),
-    role!(54, "Bind.STP", "Bindiren Stoper", CentreBack, [pace, stamina, crossing, dribbling, tackling, marking, work_rate, positioning, heading]),
-    role!(55, "OKKB", "Oyun Kurucu Kanat Bek", WideBack, [passing, vision, technique, crossing, first_touch, decisions, stamina, composure, teamwork]),
-    role!(56, "Kor.OS", "Koridor Orta Sahası", CentreMid, [off_the_ball, stamina, work_rate, passing, crossing, acceleration, dribbling, teamwork]),
-    role!(57, "MOK", "Merkez Oyun Kurucu", CentreMid, [passing, vision, first_touch, technique, composure, decisions, teamwork, anticipation, off_the_ball]),
+    role!(0, "KL", "Kaleci", "GK", "Goalkeeper", Keeper, [handling, reflexes, aerial_reach, one_on_ones, concentration, positioning, command_of_area, communication]),
+    role!(1, "STP", "Stoper", "CB", "Centre-Back", CentreBack, [heading, marking, tackling, positioning, jumping_reach, strength, anticipation, concentration, bravery, pace]),
+    role!(2, "BK", "Bek", "FB", "Full-Back", WideBack, [tackling, marking, positioning, crossing, stamina, pace, work_rate, anticipation, teamwork, concentration]),
+    role!(3, "KB", "Kanat Bek", "WB", "Wing-Back", WideBack, [crossing, dribbling, stamina, pace, acceleration, work_rate, off_the_ball, tackling, teamwork, technique]),
+    role!(4, "DOS", "Defansif Orta Saha", "DM", "Defensive Midfielder", DefMid, [tackling, positioning, anticipation, concentration, marking, teamwork, work_rate, stamina, passing, decisions, strength]),
+    role!(5, "SOS", "Savaşçı Orta Saha", "BWM", "Ball Winning Midfielder", DefOrCentreMid, [tackling, aggression, bravery, work_rate, stamina, anticipation, marking, strength, teamwork]),
+    role!(6, "OKÖ", "Oyun Kurucu Kanat", "WP", "Wide Playmaker", Wide, [passing, vision, first_touch, technique, dribbling, decisions, composure, flair, off_the_ball]),
+    role!(7, "KNT", "Kanat Oyuncusu", "W", "Winger", Wide, [crossing, dribbling, pace, acceleration, technique, agility, off_the_ball, flair, stamina]),
+    role!(8, "MOS", "Merkez Orta Saha", "CM", "Central Midfielder", CentreMid, [passing, first_touch, decisions, teamwork, work_rate, stamina, tackling, positioning, off_the_ball]),
+    role!(9, "OOS", "Ofansif Orta Saha", "AM", "Attacking Midfielder", AttMid, [first_touch, passing, technique, off_the_ball, vision, decisions, composure, long_shots, flair, anticipation, dribbling]),
+    role!(10, "GF", "Geriye Gelen Forvet", "DLF", "Deep Lying Forward", Striker, [first_touch, passing, technique, composure, decisions, off_the_ball, teamwork, vision, finishing, strength]),
+    role!(11, "SNT", "Santrfor", "CF", "Centre Forward", Striker, [finishing, off_the_ball, first_touch, composure, anticipation, heading, strength, pace, acceleration, technique, decisions]),
+    role!(12, "PKL", "Pasör Kaleci", "BGK", "Ball Playing Goalkeeper", Keeper, [handling, reflexes, one_on_ones, aerial_reach, command_of_area, positioning, concentration, passing, first_touch, composure, kicking, throwing, vision]),
+    role!(13, "LİB", "Libero", "LIB", "Libero", CentreBack, [passing, vision, first_touch, composure, decisions, positioning, tackling, anticipation, dribbling, marking, pace]),
+    role!(14, "İSTP", "İleri Çıkan Stoper", "ACB", "Advanced Centre-Back", CentreBack, [passing, first_touch, composure, decisions, positioning, tackling, anticipation, dribbling, marking, heading]),
+    role!(15, "DOK", "Derin Oyun Kurucu", "DLP", "Deep Lying Playmaker", DefOrCentreMid, [passing, vision, first_touch, composure, decisions, technique, teamwork, anticipation, positioning]),
+    role!(16, "İYO", "İki Yönlü Orta Saha", "BBM", "Box to Box Midfielder", CentreMid, [stamina, work_rate, passing, tackling, off_the_ball, teamwork, long_shots, strength, decisions, pace]),
+    role!(17, "OOK", "Ofansif Oyun Kurucu", "AP", "Advanced Playmaker", CentreOrAttMid, [passing, vision, first_touch, technique, composure, decisions, flair, off_the_ball, teamwork]),
+    role!(18, "HS", "Hedef Santrfor", "TF", "Target Forward", Striker, [heading, jumping_reach, strength, bravery, teamwork, first_touch, finishing, composure]),
+    role!(19, "FÇ", "Fırsatçı Golcü", "P", "Poacher", Striker, [finishing, off_the_ball, anticipation, composure, acceleration, first_touch, pace]),
+    role!(20, "YF", "Yaratıcı Forvet", "TREQ", "Trequartista", AttMid, [passing, vision, technique, first_touch, dribbling, flair, composure, off_the_ball, decisions, acceleration]),
+    role!(21, "KKB", "Komple Kanat Bek", "CWB", "Complete Wing-Back", WideBack, [crossing, dribbling, technique, first_touch, passing, off_the_ball, flair, stamina, pace, acceleration, work_rate, decisions]),
+    role!(22, "PF", "Presçi Forvet", "PF", "Pressing Forward", Striker, [work_rate, stamina, aggression, bravery, anticipation, teamwork, pace, acceleration, finishing]),
+    role!(23, "GL", "Gizli Libero", "HB", "Half Back", DefMid, [positioning, tackling, marking, anticipation, concentration, composure, passing, decisions, strength, heading]),
+    role!(24, "PSTP", "Pasör Stoper", "BCB", "Ball Playing Centre-Back", CentreBack, [heading, marking, tackling, positioning, jumping_reach, strength, anticipation, passing, first_touch, composure, vision, technique]),
+    role!(25, "ÇP", "Çapa", "A", "Anchor", DefMid, [positioning, tackling, marking, anticipation, concentration, decisions, strength, composure]),
+    role!(26, "REG", "Regista", "REG", "Regista", DefMid, [passing, vision, first_touch, technique, composure, decisions, flair, off_the_ball, teamwork]),
+    role!(27, "KNF", "Kanat Forvet", "IF", "Inside Forward", Wide, [dribbling, finishing, first_touch, technique, off_the_ball, acceleration, pace, composure, anticipation, long_shots, agility]),
+    role!(28, "GOK", "Gezgin Oyun Kurucu", "RPM", "Roaming Playmaker", CentreMid, [passing, vision, first_touch, technique, composure, decisions, off_the_ball, stamina, work_rate, dribbling, pace]),
+    role!(29, "ÇSTP", "Çakılı Stoper", "NCB", "No-Nonsense Centre-Back", CentreBack, [heading, marking, tackling, positioning, strength, jumping_reach, bravery, aggression]),
+    role!(30, "ENG", "Enganche", "ENG", "Enganche", AttMid, [passing, vision, first_touch, technique, composure, decisions, flair]),
+    role!(31, "KF", "Komple Forvet", "CF", "Complete Forward", Striker, [finishing, off_the_ball, first_touch, composure, anticipation, heading, strength, pace, acceleration, dribbling, technique, vision, passing]),
+    role!(32, "RMD", "Raumdeuter", "RMD", "Raumdeuter", Wide, [off_the_ball, anticipation, finishing, composure, concentration, decisions, stamina, acceleration]),
+    role!(33, "İKK", "İçe Kat Eden Kanat", "IW", "Inverted Winger", Wide, [dribbling, passing, crossing, technique, first_touch, off_the_ball, acceleration, pace, agility, vision, composure]),
+    role!(34, "ÇK", "Çalışkan Kanat", "DW", "Defensive Winger", Wide, [work_rate, stamina, tackling, positioning, marking, teamwork, crossing, dribbling, pace]),
+    role!(35, "SSÖ", "Savunma Önü Libero", "DM", "Half Back / DM", DefMid, [positioning, tackling, marking, anticipation, concentration, composure, passing, decisions, strength, heading]),
+    role!(36, "MEZ", "Mezzala", "MEZ", "Mezzala", CentreMid, [passing, dribbling, technique, first_touch, off_the_ball, vision, work_rate, stamina, acceleration, long_shots]),
+    role!(37, "CAR", "Carrilero", "CAR", "Carrilero", CentreMid, [positioning, tackling, passing, teamwork, stamina, work_rate, decisions, concentration]),
+    role!(38, "OKB", "Ofansif Kanat Bek", "AWB", "Attacking Wing-Back", WideBack, [crossing, dribbling, pace, acceleration, stamina, off_the_ball, flair, technique, work_rate]),
+    role!(39, "SV", "Segundo Volante", "SV", "Segundo Volante", DefMid, [off_the_ball, finishing, long_shots, passing, tackling, positioning, stamina, work_rate, pace, strength]),
+    role!(40, "S9", "Sahte Dokuz", "F9", "False Nine", Striker, [first_touch, passing, technique, vision, dribbling, composure, decisions, off_the_ball, finishing, flair, agility]),
+    role!(41, "GF", "Gölge Forvet", "SS", "Shadow Striker", AttMid, [finishing, off_the_ball, first_touch, composure, anticipation, dribbling, acceleration, pace, decisions, work_rate]),
+    role!(42, "KHO", "Kanat Hedef Oyuncusu", "WTF", "Wide Target Forward", Wide, [heading, jumping_reach, strength, bravery, off_the_ball, first_touch, teamwork]),
+    role!(43, "OKK", "Oyun Kurucu Kanat", "PW", "Playmaking Winger", Wide, [passing, vision, first_touch, technique, dribbling, decisions, composure, flair, off_the_ball]),
+    role!(44, "İKB", "İçe Kat Eden Kanat Bek", "IWB", "Inverted Wing-Back", WideBack, [passing, first_touch, decisions, composure, tackling, positioning, teamwork, anticipation, technique]),
+    role!(45, "GNF", "Geniş Alan Forveti", "WF", "Wide Forward", Wide, [finishing, off_the_ball, pace, acceleration, dribbling, first_touch, composure, anticipation, heading]),
+    role!(46, "İYOK", "İki Yönlü Oyun Kurucu", "BBP", "Box-to-Box Playmaker", CentreMid, [stamina, work_rate, passing, vision, technique, first_touch, composure, off_the_ball, teamwork, decisions]),
+    role!(47, "İF", "İleri Uç Forvet", "AF", "Advanced Forward", Striker, [finishing, off_the_ball, first_touch, composure, anticipation, pace, acceleration, dribbling]),
+    role!(48, "KOS", "Kanat Orta Saha", "WM", "Wide Midfielder", CentreMid, [passing, crossing, stamina, work_rate, off_the_ball, teamwork, first_touch, decisions]),
+    role!(49, "İKK", "İçe Kat Eden Kanat", "IW", "Inside Winger", Wide, [dribbling, passing, crossing, technique, first_touch, off_the_ball, acceleration, pace, agility, flair, composure]),
+    role!(50, "HOS", "Hücumcu Orta Saha", "AM", "Attacking Midfielder", CentreOrAttMid, [first_touch, passing, technique, off_the_ball, vision, decisions, composure, long_shots, flair]),
+    role!(51, "DF", "Destek Forvet", "DLF", "Supporting Forward", Striker, [first_touch, passing, technique, composure, decisions, off_the_ball, teamwork, vision, finishing]),
+    role!(52, "İBK", "İçe Kat Eden Bek", "IFB", "Inverted Full-Back", WideBack, [tackling, marking, positioning, heading, strength, concentration, passing, anticipation]),
+    role!(53, "GKL", "Geleneksel Kaleci", "TGK", "Traditional Goalkeeper", Keeper, [handling, reflexes, aerial_reach, one_on_ones, concentration, positioning, command_of_area, communication]),
+    role!(54, "Bind.STP", "Bindiren Stoper", "OCB", "Overlapping Centre-Back", CentreBack, [pace, stamina, crossing, dribbling, tackling, marking, work_rate, positioning, heading]),
+    role!(55, "OKKB", "Oyun Kurucu Kanat Bek", "PWB", "Playmaking Wing-Back", WideBack, [passing, vision, technique, crossing, first_touch, decisions, stamina, composure, teamwork]),
+    role!(56, "Kor.OS", "Koridor Orta Sahası", "CHM", "Channel Midfielder", CentreMid, [off_the_ball, stamina, work_rate, passing, crossing, acceleration, dribbling, teamwork]),
+    role!(57, "MOK", "Merkez Oyun Kurucu", "MPM", "Midfield Playmaker", CentreMid, [passing, vision, first_touch, technique, composure, decisions, teamwork, anticipation, off_the_ball]),
 ];
 
-/// Rollen zonder bal (Topsuz Roller - Türkçe).
+/// Rollen zonder bal (Topsuz Roller - Türkçe & English).
 pub const OOP_ROLES: &[Role] = &[
-    role!(1, "LKL", "Libero Kaleci", Keeper, [rushing_out, one_on_ones, anticipation, acceleration, command_of_area, reflexes, handling, decisions, concentration]),
-    role!(2, "ÇKL", "Çizgi Kalecisi", Keeper, [handling, reflexes, positioning, concentration, aerial_reach, command_of_area, one_on_ones]),
-    role!(3, "STP", "Stoper", CentreBack, [marking, tackling, positioning, heading, jumping_reach, strength, concentration, anticipation]),
-    role!(4, "KSTP", "Kesici Stoper", CentreBack, [aggression, bravery, tackling, anticipation, strength, decisions, marking, heading]),
-    role!(5, "SSTP", "Sigorta Stoper", CentreBack, [pace, acceleration, positioning, anticipation, concentration, marking, decisions, tackling]),
-    role!(6, "GSTP", "Geniş Stoper", CentreBack, [tackling, marking, pace, positioning, stamina, anticipation]),
-    role!(9, "BK", "Bek", WideBack, [tackling, marking, positioning, concentration, anticipation, pace, teamwork]),
-    role!(10, "PBK", "Presçi Bek", WideBack, [aggression, work_rate, stamina, tackling, acceleration, anticipation, pace, bravery]),
-    role!(11, "ÇBK", "Çakılı Bek", WideBack, [positioning, concentration, marking, tackling, anticipation, decisions]),
-    role!(12, "KB", "Kanat Bek", WideBack, [tackling, marking, stamina, work_rate, pace, positioning]),
-    role!(14, "ÇKB", "Çakılı Kanat Bek", WideBack, [positioning, concentration, marking, tackling, anticipation, stamina]),
-    role!(15, "DOS", "Defansif Orta Saha", DefMid, [positioning, tackling, anticipation, concentration, marking, teamwork, strength]),
-    role!(16, "GDOS", "Geriye Gömülen DOS", DefMid, [positioning, marking, heading, concentration, anticipation, tackling, strength, decisions]),
-    role!(17, "PDOS", "Presçi DOS", DefMid, [aggression, work_rate, stamina, tackling, anticipation, acceleration, bravery, teamwork]),
-    role!(20, "OS", "Merkez Orta Saha", CentreMid, [tackling, positioning, work_rate, teamwork, stamina, anticipation, concentration]),
-    role!(27, "POS", "Presçi Orta Saha", CentreMid, [work_rate, stamina, aggression, tackling, anticipation, acceleration, teamwork, bravery]),
-    role!(28, "Per.OS", "Perdeleyici Orta Saha", CentreMid, [positioning, anticipation, concentration, tackling, marking, teamwork, decisions]),
-    role!(32, "ÇOOS", "Çıkış Noktası OOS", AttMid, [off_the_ball, anticipation, acceleration, pace, composure, first_touch]),
-    role!(38, "KNT", "Kanat Oyuncusu", Wide, [work_rate, stamina, teamwork, tackling, positioning, pace, anticipation]),
-    role!(39, "TKNT", "Takipçi Kanat", Wide, [work_rate, stamina, teamwork, tackling, marking, positioning, concentration]),
-    role!(40, "İÇK", "İç Çıkış Kanadı", Wide, [off_the_ball, anticipation, acceleration, pace, composure]),
-    role!(42, "SNT", "Santrfor", Striker, [work_rate, teamwork, anticipation, stamina, aggression, strength, pace]),
-    role!(43, "TSNT", "Takipçi Santrfor", Striker, [work_rate, stamina, teamwork, tackling, aggression, anticipation]),
-    role!(44, "ÇSNT", "Çıkış Noktası Santrfor", Striker, [off_the_ball, anticipation, pace, acceleration, strength, composure]),
+    role!(0, "KL", "Kaleci", "GK", "Goalkeeper", Keeper, [handling, reflexes, positioning, concentration, aerial_reach, command_of_area, one_on_ones]),
+    role!(1, "LKL", "Libero Kaleci", "SK", "Sweeper Keeper", Keeper, [rushing_out, one_on_ones, anticipation, acceleration, command_of_area, reflexes, handling, decisions, concentration]),
+    role!(2, "ÇKL", "Çizgi Kalecisi", "LGK", "Line Goalkeeper", Keeper, [handling, reflexes, positioning, concentration, aerial_reach, command_of_area, one_on_ones]),
+    role!(3, "STP", "Stoper", "CB", "Centre-Back", CentreBack, [marking, tackling, positioning, heading, jumping_reach, strength, concentration, anticipation]),
+    role!(4, "KSTP", "Kesici Stoper", "SCB", "Stopping Centre-Back", CentreBack, [aggression, bravery, tackling, anticipation, strength, decisions, marking, heading]),
+    role!(5, "SSTP", "Sigorta Stoper", "CCB", "Covering Centre-Back", CentreBack, [pace, acceleration, positioning, anticipation, concentration, marking, decisions, tackling]),
+    role!(6, "GSTP", "Geniş Stoper", "WCB", "Wide Centre-Back", CentreBack, [tackling, marking, pace, positioning, stamina, anticipation]),
+    role!(7, "STP", "Merkez Stoper", "CB", "Central Defender", CentreBack, [marking, tackling, positioning, heading, jumping_reach, strength, concentration, anticipation]),
+    role!(8, "LİB", "Sigorta Libero", "SW", "Sweeper", CentreBack, [pace, acceleration, positioning, anticipation, concentration, marking, decisions, tackling]),
+    role!(9, "BK", "Bek", "FB", "Full-Back", WideBack, [tackling, marking, positioning, concentration, anticipation, pace, teamwork]),
+    role!(10, "PBK", "Presçi Bek", "PFB", "Pressing Full-Back", WideBack, [aggression, work_rate, stamina, tackling, acceleration, anticipation, pace, bravery]),
+    role!(11, "ÇBK", "Çakılı Bek", "HFB", "Holding Full-Back", WideBack, [positioning, concentration, marking, tackling, anticipation, decisions]),
+    role!(12, "KB", "Kanat Bek", "WB", "Wing-Back", WideBack, [tackling, marking, stamina, work_rate, pace, positioning]),
+    role!(13, "PKB", "Presçi Kanat Bek", "PWB", "Pressing Wing-Back", WideBack, [aggression, work_rate, stamina, tackling, acceleration, anticipation, pace]),
+    role!(14, "ÇKB", "Çakılı Kanat Bek", "HWB", "Holding Wing-Back", WideBack, [positioning, concentration, marking, tackling, anticipation, stamina]),
+    role!(15, "DOS", "Defansif Orta Saha", "DM", "Defensive Midfielder", DefMid, [positioning, tackling, anticipation, concentration, marking, teamwork, strength]),
+    role!(16, "GDOS", "Geriye Gömülen DOS", "DDM", "Dropping DM", DefMid, [positioning, marking, heading, concentration, anticipation, tackling, strength, decisions]),
+    role!(17, "PDOS", "Presçi DOS", "PDM", "Pressing DM", DefMid, [aggression, work_rate, stamina, tackling, anticipation, acceleration, bravery, teamwork]),
+    role!(18, "Per.DOS", "Perdeleyici DOS", "SDM", "Screening DM", DefMid, [positioning, anticipation, concentration, tackling, marking, teamwork, decisions]),
+    role!(19, "GDOS", "Geniş DOS", "WDM", "Wide DM", DefMid, [tackling, positioning, work_rate, stamina, anticipation, pace]),
+    role!(20, "OS", "Merkez Orta Saha", "CM", "Central Midfielder", CentreMid, [tackling, positioning, work_rate, teamwork, stamina, anticipation, concentration]),
+    role!(21, "MOS", "Merkez Orta Saha", "CM", "Central Midfielder", CentreMid, [tackling, positioning, work_rate, teamwork, stamina, anticipation, concentration]),
+    role!(22, "KOS", "Kanat Orta Saha", "WM", "Wide Midfielder", CentreMid, [work_rate, stamina, teamwork, tackling, positioning, pace]),
+    role!(23, "TKOS", "Takipçi Kanat OS", "TWM", "Tracking Wide Midfielder", CentreMid, [work_rate, stamina, teamwork, tackling, marking, positioning]),
+    role!(24, "PKOS", "Presçi Kanat OS", "PWM", "Pressing Wide Midfielder", CentreMid, [work_rate, stamina, aggression, tackling, anticipation, acceleration]),
+    role!(25, "ÇKOS", "Çıkış Kanat OS", "OWM", "Outlet Wide Midfielder", CentreMid, [off_the_ball, anticipation, acceleration, pace, composure]),
+    role!(26, "DOS", "Tutucu Orta Saha", "HCM", "Holding CM", CentreMid, [positioning, anticipation, concentration, tackling, marking, teamwork]),
+    role!(27, "POS", "Presçi Orta Saha", "PCM", "Pressing CM", CentreMid, [work_rate, stamina, aggression, tackling, anticipation, acceleration, teamwork, bravery]),
+    role!(28, "Per.OS", "Perdeleyici Orta Saha", "SCM", "Screening CM", CentreMid, [positioning, anticipation, concentration, tackling, marking, teamwork, decisions]),
+    role!(29, "OOS", "Ofansif Orta Saha", "AM", "Attacking Midfielder", AttMid, [work_rate, stamina, teamwork, anticipation, positioning, tackling]),
+    role!(30, "POOS", "Presçi OOS", "PAM", "Pressing AM", AttMid, [work_rate, stamina, aggression, anticipation, acceleration, tackling, teamwork]),
+    role!(31, "OOS", "Ofansif Orta Saha", "AM", "Attacking Midfielder", AttMid, [work_rate, teamwork, anticipation, stamina, positioning, off_the_ball]),
+    role!(32, "ÇOOS", "Çıkış Noktası OOS", "OAM", "Outlet AM", AttMid, [off_the_ball, anticipation, acceleration, pace, composure, first_touch]),
+    role!(33, "TOOS", "Takipçi OOS", "TAM", "Tracking AM", AttMid, [work_rate, stamina, teamwork, tackling, positioning, marking]),
+    role!(34, "KNT", "Kanat Oyuncusu", "W", "Winger", Wide, [work_rate, stamina, teamwork, tackling, positioning, pace, anticipation]),
+    role!(35, "DKO", "Defansif Kanat Oyuncusu", "DW", "Defensive Winger", Wide, [work_rate, stamina, teamwork, tackling, marking, positioning, concentration, pace]),
+    role!(36, "PKNT", "Presçi Kanat", "PW", "Pressing Winger", Wide, [work_rate, stamina, aggression, tackling, anticipation, acceleration, pace]),
+    role!(37, "ÇKNT", "Çıkış Kanadı", "OW", "Outlet Winger", Wide, [off_the_ball, anticipation, acceleration, pace, composure]),
+    role!(38, "KNT", "Kanat Oyuncusu", "W", "Winger", Wide, [work_rate, stamina, teamwork, tackling, positioning, pace, anticipation]),
+    role!(39, "TKNT", "Takipçi Kanat", "TW", "Tracking Winger", Wide, [work_rate, stamina, teamwork, tackling, marking, positioning, concentration]),
+    role!(40, "İÇK", "İç Çıkış Kanadı", "IOW", "Inside Outlet Winger", Wide, [off_the_ball, anticipation, acceleration, pace, composure]),
+    role!(41, "GÇK", "Geniş Çıkış Kanadı", "WOW", "Wide Outlet Winger", Wide, [off_the_ball, anticipation, acceleration, pace, composure]),
+    role!(42, "SNT", "Santrfor", "CFD", "Centre Forward", Striker, [work_rate, teamwork, anticipation, stamina, aggression, strength, pace]),
+    role!(43, "TSNT", "Takipçi Santrfor", "TCF", "Tracking Centre Forward", Striker, [work_rate, stamina, teamwork, tackling, aggression, anticipation]),
+    role!(44, "ÇSNT", "Çıkış Noktası Santrfor", "OCF", "Outlet Centre Forward", Striker, [off_the_ball, anticipation, pace, acceleration, strength, composure]),
+    role!(45, "PSNT", "Presçi Santrfor", "PCF", "Pressing Centre Forward", Striker, [work_rate, stamina, aggression, bravery, anticipation, acceleration, pace, tackling]),
+    role!(46, "BSNT", "Bölücü Santrfor", "SCF", "Splitting Centre Forward", Striker, [off_the_ball, pace, acceleration, anticipation, work_rate, stamina]),
 ];
 
 pub fn ip_role(bit: u8) -> Option<&'static Role> {
@@ -278,8 +339,15 @@ fn generic(line: Line) -> &'static [&'static str] {
 pub fn ip_label(bit: Option<u8>) -> (String, String) {
     match bit {
         Some(b) => match ip_role(b) {
-            Some(r) => (r.code.to_string(), r.name.to_string()),
-            None => (format!("#{b}"), "uygulamanın henüz tanımadığı rol".to_string()),
+            Some(r) => (r.code_str().to_string(), r.name_str().to_string()),
+            None => (
+                format!("#{b}"),
+                if crate::i18n::is_tr() {
+                    "uygulamanın henüz tanımadığı rol".to_string()
+                } else {
+                    "role not yet mapped by the app".to_string()
+                },
+            ),
         },
         None => ("–".into(), String::new()),
     }
@@ -288,8 +356,15 @@ pub fn ip_label(bit: Option<u8>) -> (String, String) {
 pub fn oop_label(bit: Option<u8>) -> (String, String) {
     match bit {
         Some(b) => match oop_role(b) {
-            Some(r) => (r.code.to_string(), r.name.to_string()),
-            None => (format!("#{b}"), "uygulamanın henüz tanımadığı rol".to_string()),
+            Some(r) => (r.code_str().to_string(), r.name_str().to_string()),
+            None => (
+                format!("#{b}"),
+                if crate::i18n::is_tr() {
+                    "uygulamanın henüz tanımadığı rol".to_string()
+                } else {
+                    "role not yet mapped by the app".to_string()
+                },
+            ),
         },
         None => ("–".into(), String::new()),
     }

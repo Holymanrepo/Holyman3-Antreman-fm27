@@ -19,6 +19,7 @@ struct Snapshot {
     club: Option<Value>,
     squad: Option<Vec<Value>>,
     understanding: Option<Value>,
+    tactics: Option<crate::tactics::Data>,
     /// uitkomst van het op 100 % houden, als er iets teruggezet is
     kept: Option<Value>,
     human_flags: Option<Value>,
@@ -255,6 +256,22 @@ impl LiveState {
         self.tactics_rx.is_some()
     }
 
+    /// Uygulamadan seçilen taktiği aktif yapar ve FM27 belleğine bildirir.
+    pub fn select_tactic(&mut self, ctx: &egui::Context, pick: usize) {
+        let mut raw_idx = pick;
+        if let Some(d) = &mut self.tactics {
+            if let Some(t) = d.tactics.get(pick) {
+                raw_idx = t.index;
+                d.current = pick;
+            }
+        }
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = agent::request(json!({"cmd": "set_tactic", "index": raw_idx}));
+            ctx2.request_repaint();
+        });
+    }
+
     /// Een andere manager of een ander team: wat van het vorige team was, vervalt.
     pub fn choose(&mut self, ctx: &egui::Context, choice: (Option<u32>, Option<usize>)) {
         self.choice = choice;
@@ -324,6 +341,9 @@ impl LiveState {
                 }
                 if let Ok(u) = agent::request(json!({"cmd": "understanding"})) {
                     snap.understanding = Some(u);
+                }
+                if let Ok(t) = agent::request(json!({"cmd": "tactics"})) {
+                    snap.tactics = serde_json::from_value(t).ok();
                 }
                 if let Ok(f) = agent::request(json!({"cmd": "human_flags"})) {
                     snap.human_flags = Some(f);
@@ -406,6 +426,10 @@ impl LiveState {
                 }
                 if let Some(u) = s.understanding {
                     self.understanding = Some(u);
+                }
+                if let Some(t) = s.tactics {
+                    self.tactics = Some(t);
+                    self.tactics_error.clear();
                 }
                 if let Some(f) = s.human_flags {
                     self.human_flags = Some(f);
@@ -529,8 +553,8 @@ impl LiveState {
         if !agent::LIVE_SUPPORTED {
             return;
         }
-        // verbinding bijhouden: elke 20 s (of meteen als er een socket is maar nog geen verbinding)
-        let due = self.last_poll.is_none_or(|t| t.elapsed().as_secs() >= if self.connected { 20 } else { 5 });
+        // verbinding & actieve tactiek bijhouden: elke 4 s
+        let due = self.last_poll.is_none_or(|t| t.elapsed().as_secs() >= 4);
         if due && !self.busy() && agent::module_ready() {
             self.last_poll = Some(Instant::now());
             self.refresh(ctx, "", None);
