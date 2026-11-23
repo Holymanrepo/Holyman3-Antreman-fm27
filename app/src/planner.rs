@@ -37,14 +37,26 @@ impl WeekKind {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            WeekKind::PreSeasonEarly => "Sezon Öncesi (Erken)",
-            WeekKind::PreSeasonMid => "Sezon Öncesi (Orta)",
-            WeekKind::PreSeasonLate => "Sezon Öncesi (Geç)",
-            WeekKind::Season => "Sezon",
-            WeekKind::InternationalBreak => "Milli Ara",
-            WeekKind::WinterBreak => "Devre Arası",
-            WeekKind::OffSeason => "Tatil",
+        if crate::i18n::is_tr() {
+            match self {
+                WeekKind::PreSeasonEarly => "Sezon Öncesi (Erken)",
+                WeekKind::PreSeasonMid => "Sezon Öncesi (Orta)",
+                WeekKind::PreSeasonLate => "Sezon Öncesi (Geç)",
+                WeekKind::Season => "Sezon",
+                WeekKind::InternationalBreak => "Milli Ara",
+                WeekKind::WinterBreak => "Devre Arası",
+                WeekKind::OffSeason => "Tatil",
+            }
+        } else {
+            match self {
+                WeekKind::PreSeasonEarly => "Pre-Season (early)",
+                WeekKind::PreSeasonMid => "Pre-Season (mid)",
+                WeekKind::PreSeasonLate => "Pre-Season (late)",
+                WeekKind::Season => "Season",
+                WeekKind::InternationalBreak => "International Break",
+                WeekKind::WinterBreak => "Winter Break",
+                WeekKind::OffSeason => "Off-Season",
+            }
         }
     }
 
@@ -82,14 +94,26 @@ pub enum DayRole {
 
 impl DayRole {
     pub fn label(self) -> &'static str {
-        match self {
-            DayRole::Match => "Maç Günü",
-            DayRole::PostMatch => "Maç Ertesi",
-            DayRole::PreMatch => "Maç Öncesi",
-            DayRole::PostAndPreMatch => "2 Maç Arası",
-            DayRole::Training => "Antrenman Günü",
-            DayRole::Recovery => "Yenilenme",
-            DayRole::Holiday => "İzin",
+        if crate::i18n::is_tr() {
+            match self {
+                DayRole::Match => "Maç Günü",
+                DayRole::PostMatch => "Maç Ertesi",
+                DayRole::PreMatch => "Maç Öncesi",
+                DayRole::PostAndPreMatch => "2 Maç Arası",
+                DayRole::Training => "Antrenman Günü",
+                DayRole::Recovery => "Yenilenme",
+                DayRole::Holiday => "İzin",
+            }
+        } else {
+            match self {
+                DayRole::Match => "Match Day",
+                DayRole::PostMatch => "Post-Match",
+                DayRole::PreMatch => "Pre-Match",
+                DayRole::PostAndPreMatch => "Between Matches",
+                DayRole::Training => "Training Day",
+                DayRole::Recovery => "Recovery",
+                DayRole::Holiday => "Holiday",
+            }
         }
     }
 }
@@ -156,22 +180,62 @@ impl TacticMode {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            TacticMode::Auto => "Otomatik (Aktif Taktik)",
-            TacticMode::Gegenpress => "Gegenpress (Yüksek Pres)",
-            TacticMode::Possession => "Tiki-Taka (Pas & Topa Sahip Olma)",
-            TacticMode::WingAttack => "Kanat & Hızlı Hücum",
-            TacticMode::LowBlockCounter => "Savunma & Kontra Atak",
+        if crate::i18n::is_tr() {
+            match self {
+                TacticMode::Auto => "Otomatik (Aktif Taktik)",
+                TacticMode::Gegenpress => "Gegenpress (Yüksek Pres)",
+                TacticMode::Possession => "Tiki-Taka (Pas & Topa Sahip Olma)",
+                TacticMode::WingAttack => "Kanat & Hızlı Hücum",
+                TacticMode::LowBlockCounter => "Savunma & Kontra Atak",
+            }
+        } else {
+            match self {
+                TacticMode::Auto => "Auto (Active Tactic)",
+                TacticMode::Gegenpress => "Gegenpress (High Press)",
+                TacticMode::Possession => "Tiki-Taka (Possession)",
+                TacticMode::WingAttack => "Wing & Fast Attack",
+                TacticMode::LowBlockCounter => "Low Block & Counter",
+            }
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        if crate::i18n::is_tr() {
+            match self {
+                TacticMode::Auto => "Otomatik (Aktif Taktik)",
+                TacticMode::Gegenpress => "Gegenpress",
+                TacticMode::Possession => "Tiki-Taka",
+                TacticMode::WingAttack => "Kanat & Hızlı Hücum",
+                TacticMode::LowBlockCounter => "Savunma & Kontra",
+            }
+        } else {
+            match self {
+                TacticMode::Auto => "Auto (Active Tactic)",
+                TacticMode::Gegenpress => "Gegenpress",
+                TacticMode::Possession => "Tiki-Taka",
+                TacticMode::WingAttack => "Wing & Fast Attack",
+                TacticMode::LowBlockCounter => "Low Block & Counter",
+            }
         }
     }
 
     pub fn description(self) -> &'static str {
-        match self {
-            TacticMode::Auto => "FM'deki aktif taktiğinizin zayıf alanlarına ve oyuncularınızın rollerine göre en uyumlu seansları otomatik seçer.",
-            TacticMode::Gegenpress => "Pres Yoğunluğu, Karşılama Çizgisi, Pres Tuzağı, Geçiş - Şok Pres ve Savunma Karşılaması seanslarına ağırlık verir.",
-            TacticMode::Possession => "Pas Stili, Oyun Kurulum, Top Takımdayken Diziliş, Pas & Topa Sahip Olma ve Presten Çıkış seanslarına ağırlık verir.",
-            TacticMode::WingAttack => "Pozisyon Üretimi, Hücum - Kanatlar, Hücum - Dikine, Üçüncü Bölge ve Bitiricilik seanslarına ağırlık verir.",
-            TacticMode::LowBlockCounter => "Top Rakipteyken Diziliş, Savunma Bloğu, Savunma Yerleşimi, Geçiş - Hızlı Çıkış ve Hava/Yerden Savunma seanslarına ağırlık verir.",
+        if crate::i18n::is_tr() {
+            match self {
+                TacticMode::Auto => "FM'deki aktif taktiğinizin zayıf alanlarına ve oyuncularınızın rollerine göre en uyumlu seansları otomatik seçer.",
+                TacticMode::Gegenpress => "Pres Yoğunluğu, Karşılama Çizgisi, Pres Tuzağı, Geçiş - Şok Pres ve Savunma Karşılaması seanslarına ağırlık verir.",
+                TacticMode::Possession => "Pas Stili, Oyun Kurulum, Top Takımdayken Diziliş, Pas & Topa Sahip Olma ve Presten Çıkış seanslarına ağırlık verir.",
+                TacticMode::WingAttack => "Pozisyon Üretimi, Hücum - Kanatlar, Hücum - Dikine, Üçüncü Bölge ve Bitiricilik seanslarına ağırlık verir.",
+                TacticMode::LowBlockCounter => "Top Rakipteyken Diziliş, Savunma Bloğu, Savunma Yerleşimi, Geçiş - Hızlı Çıkış ve Hava/Yerden Savunma seanslarına ağırlık verir.",
+            }
+        } else {
+            match self {
+                TacticMode::Auto => "Automatically picks sessions tailored to your active tactic's weakest areas and player roles in FM.",
+                TacticMode::Gegenpress => "Prioritizes Pressing Intensity, Line of Engagement, Pressing Trap, Transition - Press and Defensive Engagement.",
+                TacticMode::Possession => "Prioritizes Passing Style, Build Up, In Possession Shape, Possession Ball Work and Press Avoidance.",
+                TacticMode::WingAttack => "Prioritizes Chance Creation, Attacking - Wings, Attacking - Direct, Final Third and Chance Conversion.",
+                TacticMode::LowBlockCounter => "Prioritizes Out Of Possession Shape, Defensive Block, Defensive Positioning, Transition - Progress and Aerial/Ground Defence.",
+            }
         }
     }
 
@@ -680,16 +744,30 @@ fn focus_short(f: &str) -> &'static str {
 }
 
 pub fn short(f: Factor) -> &'static str {
-    match f {
-        Factor::InPossessionShape => "TTD",
-        Factor::PassingStyle => "PS",
-        Factor::BuildUp => "OK",
-        Factor::ChanceCreation => "PÜ",
-        Factor::OutOfPossessionShape => "TRD",
-        Factor::LineOfEngagement => "KÇ",
-        Factor::PressingIntensity => "PY",
-        Factor::PressingTrap => "PT",
-        _ => "?",
+    if crate::i18n::is_tr() {
+        match f {
+            Factor::InPossessionShape => "TTD",
+            Factor::PassingStyle => "PS",
+            Factor::BuildUp => "OK",
+            Factor::ChanceCreation => "PÜ",
+            Factor::OutOfPossessionShape => "TRD",
+            Factor::LineOfEngagement => "KÇ",
+            Factor::PressingIntensity => "PY",
+            Factor::PressingTrap => "PT",
+            _ => "?",
+        }
+    } else {
+        match f {
+            Factor::InPossessionShape => "IPS",
+            Factor::PassingStyle => "PS",
+            Factor::BuildUp => "BU",
+            Factor::ChanceCreation => "CC",
+            Factor::OutOfPossessionShape => "OOPS",
+            Factor::LineOfEngagement => "LoE",
+            Factor::PressingIntensity => "PI",
+            Factor::PressingTrap => "PT",
+            _ => "?",
+        }
     }
 }
 

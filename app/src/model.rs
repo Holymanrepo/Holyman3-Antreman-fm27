@@ -20,13 +20,22 @@ impl Component {
         Component::NextMatchInfo,
     ];
 
-    /// Titel zoals in FM27 (Türkçe).
+    /// Titel zoals in FM27 (Türkçe / English).
     pub fn label(self) -> &'static str {
-        match self {
-            Component::TacticalUnderstanding => "Taktik Anlayışı",
-            Component::PlayerAbility => "Oyuncu Yeteneği",
-            Component::PlayerBuyIn => "Oyuncu Benimsemesi",
-            Component::NextMatchInfo => "Sonraki Maç Bilgisi",
+        if crate::i18n::is_tr() {
+            match self {
+                Component::TacticalUnderstanding => "Taktik Anlayışı",
+                Component::PlayerAbility => "Oyuncu Yeteneği",
+                Component::PlayerBuyIn => "Oyuncu Benimsemesi",
+                Component::NextMatchInfo => "Sonraki Maç Bilgisi",
+            }
+        } else {
+            match self {
+                Component::TacticalUnderstanding => "Tactical Understanding",
+                Component::PlayerAbility => "Player Ability",
+                Component::PlayerBuyIn => "Player Buy-In",
+                Component::NextMatchInfo => "Next Match Info",
+            }
         }
     }
 
@@ -120,8 +129,11 @@ impl Factor {
         }
     }
 
-    /// Türkçe etiket (FM27 resmi Türkçe karşılığı).
+    /// Türkçe / İngilizce etiket.
     pub fn label(self) -> &'static str {
+        if !crate::i18n::is_tr() {
+            return self.session_name();
+        }
         match self {
             Factor::InPossessionShape => "Top Takımdayken Diziliş",
             Factor::PassingStyle => "Pas Stili",
@@ -175,37 +187,73 @@ impl Factor {
     /// Wat je eraan kunt doen (kort).
     pub fn advice(self) -> &'static str {
         use Factor::*;
-        match self {
-            InPossessionShape | PassingStyle | BuildUp | ChanceCreation | OutOfPossessionShape
-            | LineOfEngagement | PressingIntensity | PressingTrap => {
-                "Aynı adlı antrenman seansını çalıştırın (Taktik Anlayışı grubu). Birincil Antrenman Taktiğinizi oynadığınız taktiğe ayarlayın."
+        if crate::i18n::is_tr() {
+            match self {
+                InPossessionShape | PassingStyle | BuildUp | ChanceCreation | OutOfPossessionShape
+                | LineOfEngagement | PressingIntensity | PressingTrap => {
+                    "Aynı adlı antrenman seansını çalıştırın (Taktik Anlayışı grubu). Birincil Antrenman Taktiğinizi oynadığınız taktiğe ayarlayın."
+                }
+                PlayerTacticalAbility => {
+                    "Oyuncuların kendilerine bağlıdır (karar alma, sezgi, takım oyunu). Daha yüksek Taktik Yeteneğine sahip oyuncuları oynatın veya talimatları daha basit tutun."
+                }
+                TacticalComplexity => {
+                    "Çok fazla takım, oyuncu ve rakip talimatı var. Az katkı sağlayan talimatları kaldırın ve daha sonra tekrar ekleyin."
+                }
+                PlayerCapability => {
+                    "Oyuncular rollerini yeterince iyi yerine getiremiyor. Özelliklerine uygun roller seçin veya kadroyu güçlendirin."
+                }
+                PlayerRoleSuitability => {
+                    "Oyuncuları doğal mevki ve rollerinde oynatın. Puanı kimin düşürdüğünü görmek için Taktik sekmesini kontrol edin."
+                }
+                ManagerialSupport => {
+                    "İyi sonuçlar, etkili takım konuşmaları ve oyuncularla olumlu diyaloglar menajer desteğini artırır."
+                }
+                TeammatesAndStaffRelationships => {
+                    "Takım Kaynaşması (Ekstra Etkinlik) planlayın. Kadronun çekirdeğini bir arada tutun ve huzursuzluktan kaçının."
+                }
+                ManagerTendencies => {
+                    "Oyuncular menajer profilinizdeki oyun tarzını bekler. Taktiğiniz bundan ne kadar uzaklaşırsa bu değer o kadar düşer."
+                }
+                QualityOfNextOppositionReport => {
+                    "Analistlerinize/gözlemcilerinize bir sonraki rakip hakkında rapor hazırlatın ve iyi analistler işe alın."
+                }
+                OppositionPlayerKnowledge => {
+                    "Rakibi ve oyuncularını gözlemleyerek artar. Tanınmayan (Avrupa) rakipleri önceden gözlemletin."
+                }
             }
-            PlayerTacticalAbility => {
-                "Oyuncuların kendilerine bağlıdır (karar alma, sezgi, takım oyunu). Daha yüksek Taktik Yeteneğine sahip oyuncuları oynatın veya talimatları daha basit tutun."
-            }
-            TacticalComplexity => {
-                "Çok fazla takım, oyuncu ve rakip talimatı var. Az katkı sağlayan talimatları kaldırın ve daha sonra tekrar ekleyin."
-            }
-            PlayerCapability => {
-                "Oyuncular rollerini yeterince iyi yerine getiremiyor. Özelliklerine uygun roller seçin veya kadroyu güçlendirin."
-            }
-            PlayerRoleSuitability => {
-                "Oyuncuları doğal mevki ve rollerinde oynatın. Puanı kimin düşürdüğünü görmek için Taktik sekmesini kontrol edin."
-            }
-            ManagerialSupport => {
-                "İyi sonuçlar, etkili takım konuşmaları ve oyuncularla olumlu diyaloglar menajer desteğini artırır."
-            }
-            TeammatesAndStaffRelationships => {
-                "Takım Kaynaşması (Ekstra Etkinlik) planlayın. Kadronun çekirdeğini bir arada tutun ve huzursuzluktan kaçının."
-            }
-            ManagerTendencies => {
-                "Oyuncular menajer profilinizdeki oyun tarzını bekler. Taktiğiniz bundan ne kadar uzaklaşırsa bu değer o kadar düşer."
-            }
-            QualityOfNextOppositionReport => {
-                "Analistlerinize/gözlemcilerinize bir sonraki rakip hakkında rapor hazırlatın ve iyi analistler işe alın."
-            }
-            OppositionPlayerKnowledge => {
-                "Rakibi ve oyuncularını gözlemleyerek artar. Tanınmayan (Avrupa) rakipleri önceden gözlemletin."
+        } else {
+            match self {
+                InPossessionShape | PassingStyle | BuildUp | ChanceCreation | OutOfPossessionShape
+                | LineOfEngagement | PressingIntensity | PressingTrap => {
+                    "Run the training session with the same name (Tactical Understanding group). Set your Primary Trained Tactic to the tactic you play."
+                }
+                PlayerTacticalAbility => {
+                    "Depends on the players themselves (Decisions, Anticipation, Teamwork). Play players with higher tactical ability or keep instructions simpler."
+                }
+                TacticalComplexity => {
+                    "Too many team, player and opposition instructions. Remove instructions that add little and add them back later."
+                }
+                PlayerCapability => {
+                    "Players cannot carry out their roles well enough. Pick roles that match their attributes or strengthen the squad."
+                }
+                PlayerRoleSuitability => {
+                    "Play players in their natural position and role. Check the Tactics tab to see who pulls the score down."
+                }
+                ManagerialSupport => {
+                    "Good results, effective team talks and positive conversations with players raise managerial support."
+                }
+                TeammatesAndStaffRelationships => {
+                    "Schedule Team Bonding (Extra-Curricular). Keep the core of the squad together and avoid unrest."
+                }
+                ManagerTendencies => {
+                    "Players expect the playing style from your manager profile. The further your tactic drifts from it, the lower this drops."
+                }
+                QualityOfNextOppositionReport => {
+                    "Have your analysts/scouts compile a report on the next opponent and hire good analysts."
+                }
+                OppositionPlayerKnowledge => {
+                    "Grows by scouting the opponent and their players. Scout unfamiliar (European) opponents ahead of time."
+                }
             }
         }
     }
@@ -223,13 +271,24 @@ pub enum Category {
 
 impl Category {
     pub fn label(self) -> &'static str {
-        match self {
-            Category::TacticalUnderstanding => "Taktik Anlayışı",
-            Category::MatchPreparation => "Maç Hazırlığı",
-            Category::FootballingDevelopment => "Futbol Gelişimi",
-            Category::PhysicalRecovery => "Fiziksel ve Yenilenme",
-            Category::ExtraCurricular => "Takım İçi Etkinlik",
-            Category::Fixed => "Maç / Seyahat",
+        if crate::i18n::is_tr() {
+            match self {
+                Category::TacticalUnderstanding => "Taktik Anlayışı",
+                Category::MatchPreparation => "Maç Hazırlığı",
+                Category::FootballingDevelopment => "Futbol Gelişimi",
+                Category::PhysicalRecovery => "Fiziksel ve Yenilenme",
+                Category::ExtraCurricular => "Takım İçi Etkinlik",
+                Category::Fixed => "Maç / Seyahat",
+            }
+        } else {
+            match self {
+                Category::TacticalUnderstanding => "Tactical Understanding",
+                Category::MatchPreparation => "Match Preparation",
+                Category::FootballingDevelopment => "Footballing Development",
+                Category::PhysicalRecovery => "Physical & Recovery",
+                Category::ExtraCurricular => "Extra-Curricular",
+                Category::Fixed => "Match / Travel",
+            }
         }
     }
 
@@ -367,8 +426,72 @@ pub fn category_of(name: &str) -> Category {
     session(name).map(|s| s.category).unwrap_or(Category::Fixed)
 }
 
-/// Türkçe antrenman seansı adı (tam görünüm).
+/// Türkçe / İngilizce antrenman seansı adı (tam görünüm).
 pub fn session_tr(name: &str) -> &'static str {
+    if !crate::i18n::is_tr() {
+        return match name {
+            "Passing Style" => "Passing Style",
+            "Build Up" => "Build Up",
+            "Chance Creation" => "Chance Creation",
+            "In Possession Shape" => "In Possession Shape",
+            "Line of Engagement" => "Line of Engagement",
+            "Pressing Intensity" => "Pressing Intensity",
+            "Pressing Trap" => "Pressing Trap",
+            "Out Of Possession Shape" => "Out Of Possession Shape",
+            "Press Avoidance" => "Press Avoidance",
+            "Ball Progression" => "Ball Progression",
+            "Final Third" => "Final Third",
+            "Defensive Block" => "Defensive Block",
+            "Defensive Positioning" => "Defensive Positioning",
+            "Defensive Engagement" => "Defensive Engagement",
+            "Corners" => "Corners",
+            "Free Kicks" => "Free Kicks",
+            "Penalties" => "Penalties",
+            "Individual Development" => "Individual Development",
+            "Attacking Ball Work" => "Attacking Ball Work",
+            "Defensive Ball Work" => "Defensive Ball Work",
+            "Possession Ball Work" => "Possession Ball Work",
+            "Attacking - Balanced" => "Attacking - Balanced",
+            "Attacking - Patient" => "Attacking - Patient",
+            "Attacking - Direct" => "Attacking - Direct",
+            "Attacking - Wings" => "Attacking - Wings",
+            "Defending - Balanced" => "Defending - Balanced",
+            "Defending - Engaged" => "Defending - Engaged",
+            "Defending - Disengaged" => "Defending - Disengaged",
+            "Defending - Wide" => "Defending - Wide",
+            "Theory - Attacking Shadow Play" => "Theory - Attacking Shadow Play",
+            "Theory - Defensive Shadow Play" => "Theory - Defensive Shadow Play",
+            "Technical - Chance Creation" => "Technical - Chance Creation",
+            "Technical - Chance Conversion" => "Technical - Chance Conversion",
+            "Technical - Ball Retention" => "Technical - Ball Retention",
+            "Technical - Ground Defence" => "Technical - Ground Defence",
+            "Technical - Aerial Defence" => "Technical - Aerial Defence",
+            "Transition - Restrict" => "Transition - Restrict",
+            "Transition - Press" => "Transition - Press",
+            "Transition - Progress" => "Transition - Progress",
+            "GK - Balanced" => "GK - Balanced",
+            "GK - Shot Stopping" => "GK - Shot Stopping",
+            "GK - Handling" => "GK - Handling",
+            "GK - One On Ones" => "GK - One On Ones",
+            "GK - Distribution" => "GK - Distribution",
+            "Set Pieces - Delivery" => "Set Pieces - Delivery",
+            "Set Pieces - Penalties" => "Set Pieces - Penalties",
+            "Rest" | "Rest (IM)" => "Rest",
+            "Recovery" | "Recovery (IM)" => "Recovery",
+            "Light Conditioning" | "Light Conditioning (IM)" => "Light Conditioning",
+            "Conditioning" => "Conditioning",
+            "Heavy Conditioning" => "Heavy Conditioning",
+            "Team Bonding" => "Team Bonding",
+            "Community Outreach" => "Community Outreach",
+            "Travel" => "Travel",
+            "Match" => "Match",
+            "Not Available" => "Not Available",
+            "Match Preparation" => "Match Preparation",
+            "Tactical Understanding IP" => "Tactical Understanding (IP)",
+            "Tactical Understanding OOP" => "Tactical Understanding (OOP)",
+            _ => "Training",
+        };
+    }
     match name {
         "Passing Style" => "Pas Stili",
         "Build Up" => "Oyun Kurulum",
@@ -433,19 +556,34 @@ pub fn session_tr(name: &str) -> &'static str {
     }
 }
 
-/// Türkçe odak adı.
+/// Türkçe / İngilizce odak adı.
 pub fn focus_tr(focus: &str) -> &'static str {
-    match focus {
-        "Full Week of Rest" => "Tam Hafta Dinlenme",
-        "In Possession" => "Top Takımdayken (Hücum)",
-        "Out Of Possession" => "Top Rakipteyken (Savunma)",
-        "Balanced" => "Dengeli",
-        "Gegenpress" => "Gegenpress (Yüksek Pres)",
-        "Tiki-Taka" => "Tiki-Taka (Topa Sahip Olma)",
-        "Kanat & Hızlı Hücum" => "Kanat & Hızlı Hücum",
-        "Savunma & Kontra" => "Savunma & Kontra",
-        "Aktif Taktik Uyumlu" => "Aktif Taktik Uyumlu",
-        _ => "Dengeli",
+    if crate::i18n::is_tr() {
+        match focus {
+            "Full Week of Rest" => "Tam Hafta Dinlenme",
+            "In Possession" => "Top Takımdayken (Hücum)",
+            "Out Of Possession" => "Top Rakipteyken (Savunma)",
+            "Balanced" => "Dengeli",
+            "Gegenpress" => "Gegenpress (Yüksek Pres)",
+            "Tiki-Taka" => "Tiki-Taka (Topa Sahip Olma)",
+            "Kanat & Hızlı Hücum" => "Kanat & Hızlı Hücum",
+            "Savunma & Kontra" => "Savunma & Kontra",
+            "Aktif Taktik Uyumlu" => "Aktif Taktik Uyumlu",
+            _ => "Dengeli",
+        }
+    } else {
+        match focus {
+            "Full Week of Rest" => "Full Week of Rest",
+            "In Possession" => "In Possession",
+            "Out Of Possession" => "Out Of Possession",
+            "Balanced" => "Balanced",
+            "Gegenpress" => "Gegenpress (High Press)",
+            "Tiki-Taka" => "Tiki-Taka (Possession)",
+            "Kanat & Hızlı Hücum" => "Wing & Fast Attack",
+            "Savunma & Kontra" => "Low Block & Counter",
+            "Aktif Taktik Uyumlu" => "Active Tactic Compatible",
+            _ => "Balanced",
+        }
     }
 }
 
@@ -517,12 +655,22 @@ impl Effectiveness {
 
 /// Kleurklasse van een meter: rood → groen, zoals FM27 ze toont.
 pub fn level_name(score: f32) -> &'static str {
-    match score {
-        s if s < 25.0 => "çok düşük",
-        s if s < 45.0 => "düşük",
-        s if s < 60.0 => "orta",
-        s if s < 80.0 => "iyi",
-        _ => "mükemmel",
+    if crate::i18n::is_tr() {
+        match score {
+            s if s < 25.0 => "çok düşük",
+            s if s < 45.0 => "düşük",
+            s if s < 60.0 => "orta",
+            s if s < 80.0 => "iyi",
+            _ => "mükemmel",
+        }
+    } else {
+        match score {
+            s if s < 25.0 => "very poor",
+            s if s < 45.0 => "poor",
+            s if s < 60.0 => "average",
+            s if s < 80.0 => "good",
+            _ => "excellent",
+        }
     }
 }
 

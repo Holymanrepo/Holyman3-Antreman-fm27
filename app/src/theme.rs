@@ -218,13 +218,16 @@ pub fn caps(s: impl Into<String>) -> RichText {
 
 // ---- bouwstenen -----------------------------------------------------------------
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let avail = ui.available_width();
+    let inner_w = (avail - 42.0).max(80.0);
     Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(CornerRadius::same(16))
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
+            ui.set_width(inner_w);
+            ui.set_max_width(inner_w);
             add(ui)
         })
         .inner

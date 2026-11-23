@@ -118,21 +118,40 @@ impl Line {
     }
 
     pub fn label(self, side: Side) -> &'static str {
-        match (self, side) {
-            (Line::Keeper, _) => "KL",
-            (Line::CentreBack, _) => "STP",
-            (Line::WideBack, Side::Left) => "SLB / KSL",
-            (Line::WideBack, Side::Right) => "SĞB / KSĞ",
-            (Line::WideBack, Side::Centre) => "BEK",
-            (Line::DefMid, _) => "DOS",
-            (Line::DefOrCentreMid, _) => "DOS / OS",
-            (Line::CentreMid, _) => "OS (M)",
-            (Line::CentreOrAttMid, _) => "OS / OOS",
-            (Line::AttMid, _) => "OOS (M)",
-            (Line::Wide, Side::Left) => "SLK (Sol Kanat)",
-            (Line::Wide, Side::Right) => "SĞK (Sağ Kanat)",
-            (Line::Wide, Side::Centre) => "KANAT",
-            (Line::Striker, _) => "SNT (Forvet)",
+        if crate::i18n::is_tr() {
+            match (self, side) {
+                (Line::Keeper, _) => "KL",
+                (Line::CentreBack, _) => "STP",
+                (Line::WideBack, Side::Left) => "SLB / KSL",
+                (Line::WideBack, Side::Right) => "SĞB / KSĞ",
+                (Line::WideBack, Side::Centre) => "BEK",
+                (Line::DefMid, _) => "DOS",
+                (Line::DefOrCentreMid, _) => "DOS / OS",
+                (Line::CentreMid, _) => "OS (M)",
+                (Line::CentreOrAttMid, _) => "OS / OOS",
+                (Line::AttMid, _) => "OOS (M)",
+                (Line::Wide, Side::Left) => "SLK (Sol Kanat)",
+                (Line::Wide, Side::Right) => "SĞK (Sağ Kanat)",
+                (Line::Wide, Side::Centre) => "KANAT",
+                (Line::Striker, _) => "SNT (Forvet)",
+            }
+        } else {
+            match (self, side) {
+                (Line::Keeper, _) => "GK",
+                (Line::CentreBack, _) => "DC",
+                (Line::WideBack, Side::Left) => "DL / WBL",
+                (Line::WideBack, Side::Right) => "DR / WBR",
+                (Line::WideBack, Side::Centre) => "FB / WB",
+                (Line::DefMid, _) => "DM",
+                (Line::DefOrCentreMid, _) => "DM / MC",
+                (Line::CentreMid, _) => "MC",
+                (Line::CentreOrAttMid, _) => "MC / AMC",
+                (Line::AttMid, _) => "AMC",
+                (Line::Wide, Side::Left) => "AML / ML",
+                (Line::Wide, Side::Right) => "AMR / MR",
+                (Line::Wide, Side::Centre) => "Winger",
+                (Line::Striker, _) => "ST",
+            }
         }
     }
 }
@@ -345,13 +364,24 @@ pub fn fit(p: &Player, place: &Place) -> f32 {
 
 /// FM's woorden voor een positiecijfer.
 pub fn position_word(r: u8) -> &'static str {
-    match r {
-        18..=20 => "Doğal",
-        15..=17 => "Becerikli",
-        12..=14 => "Yeterli",
-        9..=11 => "İnandırıcı Değil",
-        5..=8 => "Acemi",
-        _ => "Etkisiz",
+    if crate::i18n::is_tr() {
+        match r {
+            18..=20 => "Doğal",
+            15..=17 => "Becerikli",
+            12..=14 => "Yeterli",
+            9..=11 => "İnandırıcı Değil",
+            5..=8 => "Acemi",
+            _ => "Etkisiz",
+        }
+    } else {
+        match r {
+            18..=20 => "Natural",
+            15..=17 => "Accomplished",
+            12..=14 => "Competent",
+            9..=11 => "Unconvincing",
+            5..=8 => "Awkward",
+            _ => "Ineffectual",
+        }
     }
 }
 
