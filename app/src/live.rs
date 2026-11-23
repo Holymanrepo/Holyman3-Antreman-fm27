@@ -22,6 +22,8 @@ struct Snapshot {
     tactics: Option<crate::tactics::Data>,
     /// uitkomst van het op 100 % houden, als er iets teruggezet is
     kept: Option<Value>,
+    /// otomatik bireysel antrenman sonucu
+    auto_indiv: Option<Value>,
     human_flags: Option<Value>,
     teams: Option<Value>,
     message: String,
@@ -96,6 +98,8 @@ pub struct LiveState {
     pub allow_untested: bool,
     /// Tactisch begrip op 100 % houden (instelling van de gebruiker).
     pub keep_understanding: bool,
+    /// Her güncellemede bireysel antrenmanları (mevki uyumu, zayıf ayak, rol odakları, kondisyon) otomatik uygula.
+    pub auto_individual: bool,
     /// De build van FM is niet getest: de module staat op alleen lezen (tenzij toegestaan).
     pub untested_build: bool,
     pub sell: SellState,
@@ -135,6 +139,7 @@ impl Default for LiveState {
             wage_input: String::new(),
             allow_untested: true,
             keep_understanding: false,
+            auto_individual: true,
             untested_build: false,
             sell: SellState::default(),
             tactics: None,
@@ -164,6 +169,17 @@ fn short_result(v: &Value) -> String {
                 s += &format!("; {} oyuncunun listesi dolu: bir hafta antrenman yapıp tekrar deneyin", m["no_room"]);
             }
             s + ")"
+        }
+        Value::Object(m) if m.contains_key("boosted_attrs") => {
+            let p = m.get("players").and_then(|v| v.as_u64()).unwrap_or(0);
+            let a = m.get("boosted_attrs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let pos = m.get("mastered_positions").and_then(|v| v.as_u64()).unwrap_or(0);
+            let fit = m.get("fitness_restored").and_then(|v| v.as_u64()).unwrap_or(0);
+            if crate::i18n::is_tr() {
+                format!("({p} oyuncu: +{a} rol özelliği, {pos} mevki doğal yapıldı, {fit} kondisyon %100)")
+            } else {
+                format!("({p} players: +{a} role attrs, {pos} positions natural, {fit} fitness 100%)")
+            }
         }
         Value::Object(m) if m.contains_key("players") => format!("({} oyuncu)", m["players"]),
         Value::Object(m) if m.contains_key("bans") => format!("({} ceza)", m["bans"]),
@@ -302,6 +318,7 @@ impl LiveState {
         let choice = self.choice;
         // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
         let keep = self.keep_understanding && std::env::var_os("FM27_SNAPSHOT").is_none();
+        let auto_indiv = self.auto_individual && std::env::var_os("FM27_SNAPSHOT").is_none();
         std::thread::spawn(move || {
             let mut snap = Snapshot::default();
             // eerst de keuze van de gebruiker doorgeven (oudere modules kennen dit niet: geen probleem)
@@ -327,6 +344,14 @@ impl LiveState {
                 }
             }
             if snap.club.is_some() {
+                if auto_indiv {
+                    if let Ok(r) = agent::request(json!({"cmd": "individual_training", "mode": "auto"})) {
+                        let p = r.get("players").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if p > 0 {
+                            snap.auto_indiv = Some(r);
+                        }
+                    }
+                }
                 if let Ok(Value::Array(a)) = agent::request(json!({"cmd": "squad"})) {
                     snap.squad = Some(a);
                 }
@@ -383,8 +408,23 @@ impl LiveState {
         self.rx = Some(rx);
     }
 
+    pub fn squad_avg_condition(&self) -> Option<f32> {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for p in &self.squad {
+            if let Some(c) = p.get("condition").and_then(|v| v.as_f64()) {
+                if c > 0.0 {
+                    sum += c as f32;
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 { Some(sum / count as f32) } else { None }
+    }
+
     pub fn training(&mut self, ctx: &egui::Context, eff: &Effectiveness, settings: &PlannerSettings, write: bool, only_new: bool) {
-        self.training_job(ctx, eff, settings, write, only_new, false);
+        let eff_settings = settings.with_squad_condition(self.squad_avg_condition());
+        self.training_job(ctx, eff, &eff_settings, write, only_new, false);
     }
 
     fn training_job(&mut self, ctx: &egui::Context, eff: &Effectiveness, settings: &PlannerSettings, write: bool, only_new: bool, auto: bool) {
@@ -436,6 +476,19 @@ impl LiveState {
                 }
                 if self.connected {
                     self.teams = s.teams;
+                }
+                if let Some(r) = s.auto_indiv {
+                    let pos = r.get("mastered_positions").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let attrs = r.get("boosted_attrs").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if pos > 0 || attrs > 0 {
+                        let text = if crate::i18n::is_tr() {
+                            format!("Otomatik Bireysel Antrenman: {pos} mevki uyumu doğal (20) yapıldı, +{attrs} zayıf rol özelliği geliştirildi.")
+                        } else {
+                            format!("Auto Individual Training: {pos} tactical positions mastered (20), +{attrs} weak role attributes boosted.")
+                        };
+                        self.log.insert(0, LogEntry { at: chrono::Local::now(), text, auto: true });
+                        self.log.truncate(40);
+                    }
                 }
                 if let Some(r) = s.kept {
                     let n = r.get("players").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -567,7 +620,8 @@ impl LiveState {
         let snapshot = std::env::var_os("FM27_SNAPSHOT").is_some();
         if auto && !snapshot && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
             self.last_auto = Some(Instant::now());
-            self.training_job(ctx, eff, settings, true, false, true);
+            let eff_settings = settings.with_squad_condition(self.squad_avg_condition());
+            self.training_job(ctx, eff, &eff_settings, true, false, true);
         }
     }
 }
