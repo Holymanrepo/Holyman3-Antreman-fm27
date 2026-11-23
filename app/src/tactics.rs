@@ -33,10 +33,23 @@ pub struct Player {
     pub left_foot: u8,
     #[serde(default)]
     pub right_foot: u8,
+    #[serde(default = "default_hundred")]
+    pub condition: u8,
+    #[serde(default = "default_hundred")]
+    pub sharpness: u8,
+    #[serde(default = "default_fifteen")]
+    pub morale: u8,
     #[serde(default)]
     pub injured: bool,
     #[serde(default)]
     pub banned: bool,
+}
+
+fn default_hundred() -> u8 {
+    100
+}
+fn default_fifteen() -> u8 {
+    15
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -599,6 +612,319 @@ pub fn best_eleven(places: &[Place], players: &[Player]) -> Vec<usize> {
     assign(&score).into_iter().map(|j| fit_idx[j]).collect()
 }
 
+/// Türkçe / İngilizce özellik (attribute) adı.
+pub fn attr_label(attr: &str) -> &'static str {
+    if crate::i18n::is_tr() {
+        match attr {
+            "corners" => "Korner",
+            "crossing" => "Orta Yapma",
+            "dribbling" => "Top Sürme",
+            "finishing" => "Bitiricilik",
+            "first_touch" => "İlk Kontrol",
+            "free_kicks" => "Serbest Vuruş",
+            "heading" => "Kafa Vuruşu",
+            "long_shots" => "Uzaktan Şut",
+            "long_throws" => "Uzun Taç",
+            "marking" => "Markaj",
+            "passing" => "Pas",
+            "penalty_taking" => "Penaltı",
+            "tackling" => "Top Kapma",
+            "technique" => "Teknik",
+            "aggression" => "Agresiflik",
+            "anticipation" => "Ön Sezi",
+            "bravery" => "Cesaret",
+            "composure" => "Soğukkanlılık",
+            "concentration" => "Konsantrasyon",
+            "decisions" => "Karar Alma",
+            "determination" => "Kararlılık",
+            "flair" => "Özel Yetenek",
+            "leadership" => "Liderlik",
+            "off_the_ball" => "Topsuz Alan",
+            "positioning" => "Pozisyon Alma",
+            "teamwork" => "Takım Oyunu",
+            "vision" => "Vizyon",
+            "work_rate" => "Çalışkanlık",
+            "acceleration" => "Hızlanma",
+            "agility" => "Çeviklik",
+            "balance" => "Denge",
+            "jumping_reach" => "Zıplama",
+            "natural_fitness" => "Vücut Zindeliği",
+            "pace" => "Hız",
+            "stamina" => "Dayanıklılık",
+            "strength" => "Güç",
+            "aerial_reach" => "Hava Hakimiyeti",
+            "command_of_area" => "Bölge Hakimiyeti",
+            "communication" => "İletişim",
+            "eccentricity" => "Eksantriklik",
+            "handling" => "Elle Kontrol",
+            "kicking" => "Degaj",
+            "one_on_ones" => "Bire Bir",
+            "punching" => "Yumruklama",
+            "reflexes" => "Refleks",
+            "rushing_out" => "Çıkış",
+            "throwing" => "Elle Oyuna Sokma",
+            _ => "Özellik",
+        }
+    } else {
+        match attr {
+            "corners" => "Corners",
+            "crossing" => "Crossing",
+            "dribbling" => "Dribbling",
+            "finishing" => "Finishing",
+            "first_touch" => "First Touch",
+            "free_kicks" => "Free Kicks",
+            "heading" => "Heading",
+            "long_shots" => "Long Shots",
+            "long_throws" => "Long Throws",
+            "marking" => "Marking",
+            "passing" => "Passing",
+            "penalty_taking" => "Penalty Taking",
+            "tackling" => "Tackling",
+            "technique" => "Technique",
+            "aggression" => "Aggression",
+            "anticipation" => "Anticipation",
+            "bravery" => "Bravery",
+            "composure" => "Composure",
+            "concentration" => "Concentration",
+            "decisions" => "Decisions",
+            "determination" => "Determination",
+            "flair" => "Flair",
+            "leadership" => "Leadership",
+            "off_the_ball" => "Off The Ball",
+            "positioning" => "Positioning",
+            "teamwork" => "Teamwork",
+            "vision" => "Vision",
+            "work_rate" => "Work Rate",
+            "acceleration" => "Acceleration",
+            "agility" => "Agility",
+            "balance" => "Balance",
+            "jumping_reach" => "Jumping Reach",
+            "natural_fitness" => "Natural Fitness",
+            "pace" => "Pace",
+            "stamina" => "Stamina",
+            "strength" => "Strength",
+            "aerial_reach" => "Aerial Reach",
+            "command_of_area" => "Command Of Area",
+            "communication" => "Communication",
+            "eccentricity" => "Eccentricity",
+            "handling" => "Handling",
+            "kicking" => "Kicking",
+            "one_on_ones" => "One On Ones",
+            "punching" => "Punching",
+            "reflexes" => "Reflexes",
+            "rushing_out" => "Rushing Out",
+            "throwing" => "Throwing",
+            _ => "Attribute",
+        }
+    }
+}
+
+pub struct IndividualPlan {
+    pub is_starter: bool,
+    pub line_label: &'static str,
+    pub role_code: String,
+    pub role_name: String,
+    pub oop_code: String,
+    pub oop_name: String,
+    pub role_fit: f32,
+    pub pos_rating: u8,
+    pub focus_name: &'static str,
+    pub focus_score: f32,
+    pub intensity_label: &'static str,
+    pub intensity_level: u8, // 2 = Double, 1 = Normal, 0 = Light/Rest
+    pub foot_note: String,
+    pub weak_foot_needs_work: bool,
+    pub weakest_attrs: Vec<(&'static str, u8)>,
+    pub strongest_attrs: Vec<(&'static str, u8)>,
+}
+
+const FOCUS_GROUPS: &[(&str, &str, &[&str])] = &[
+    ("Çabukluk", "Quickness", &["pace", "acceleration"]),
+    ("Dayanıklılık", "Endurance", &["stamina", "work_rate"]),
+    ("Güç", "Strength", &["strength", "jumping_reach"]),
+    ("Çeviklik ve Denge", "Agility & Balance", &["agility", "balance"]),
+    ("Pas & Vizyon", "Passing & Vision", &["passing", "vision", "technique"]),
+    ("Top Kontrolü", "Ball Control", &["first_touch", "dribbling", "flair"]),
+    ("Bitiricilik", "Shooting", &["finishing", "composure", "long_shots"]),
+    ("Savunma Yerleşimi", "Defensive Positioning", &["positioning", "marking", "tackling"]),
+    ("Hücum Hareketliliği", "Attacking Movement", &["off_the_ball", "anticipation", "decisions"]),
+    ("Hava Topu", "Aerial", &["heading", "jumping_reach", "bravery"]),
+    ("Orta & Kanat", "Crossing", &["crossing", "technique", "dribbling"]),
+];
+
+const GK_FOCUS_GROUPS: &[(&str, &str, &[&str])] = &[
+    ("Kaleci Şut Kurtarma", "GK Shot Stopping", &["reflexes", "one_on_ones", "positioning"]),
+    ("Kaleci Top Kontrolü", "GK Handling & Area", &["handling", "command_of_area", "aerial_reach"]),
+    ("Kaleci Top Dağıtımı", "GK Distribution", &["kicking", "throwing", "passing", "first_touch"]),
+    ("Kaleci Çeviklik", "GK Agility & Reflex", &["agility", "anticipation", "concentration"]),
+];
+
+pub fn player_individual_plan(p: &Player, places: &[Place]) -> IndividualPlan {
+    // 1. Find starter slot or best-fitting slot in active tactic
+    let starter_place = places.iter().find(|pl| pl.uid == Some(p.uid));
+    let is_starter = starter_place.is_some();
+    let best_place = starter_place.or_else(|| {
+        places
+            .iter()
+            .max_by(|a, b| fit(p, a).total_cmp(&fit(p, b)))
+    });
+
+    let (line, side, ip, oop, role_fit, pos_rating) = match best_place {
+        Some(pl) => (pl.line, pl.side, pl.ip, pl.oop, fit(p, pl), position_rating(p, pl)),
+        None => {
+            let is_gk = p.positions.first().copied().unwrap_or(1) >= 15;
+            let ln = if is_gk { Line::Keeper } else { Line::CentreMid };
+            (ln, Side::Centre, None, None, 70.0, 20)
+        }
+    };
+
+    let (role_code, role_name) = ip_label(ip);
+    let (oop_code, oop_name) = oop_label(oop);
+    let role_attrs = ip
+        .and_then(ip_role)
+        .map(|r| r.attrs)
+        .unwrap_or_else(|| generic(line));
+
+    let mut ranked: Vec<(&'static str, u8)> = role_attrs
+        .iter()
+        .map(|&a| (a, p.attributes.get(a).copied().unwrap_or(10)))
+        .collect();
+    ranked.sort_by_key(|&(_, v)| v);
+    let weakest_attrs: Vec<(&'static str, u8)> = ranked
+        .iter()
+        .take(3)
+        .map(|&(a, v)| (attr_label(a), v))
+        .collect();
+    let strongest_attrs: Vec<(&'static str, u8)> = ranked
+        .iter()
+        .rev()
+        .take(3)
+        .map(|&(a, v)| (attr_label(a), v))
+        .collect();
+
+    // 2. Pick optimal FM27 Additional Focus
+    let groups = if line == Line::Keeper { GK_FOCUS_GROUPS } else { FOCUS_GROUPS };
+    let mut best_focus = (
+        if crate::i18n::is_tr() { groups[0].0 } else { groups[0].1 },
+        20.0f32,
+    );
+    let mut lowest_weighted = f32::MAX;
+    for &(tr_n, en_n, g_attrs) in groups {
+        let overlap = g_attrs.iter().filter(|a| role_attrs.contains(a)).count();
+        if line != Line::Keeper && overlap == 0 {
+            continue;
+        }
+        let sum: f32 = g_attrs
+            .iter()
+            .map(|&a| p.attributes.get(a).copied().unwrap_or(10) as f32)
+            .sum();
+        let avg = sum / g_attrs.len().max(1) as f32;
+        let weighted = avg - (overlap as f32 * 0.6);
+        if weighted < lowest_weighted {
+            lowest_weighted = weighted;
+            best_focus = (if crate::i18n::is_tr() { tr_n } else { en_n }, avg);
+        }
+    }
+
+    // 3. Intensity recommendation from condition & injury status
+    let (intensity_label, intensity_level) = if p.injured {
+        (
+            if crate::i18n::is_tr() { "Tedavi / Dinlenme" } else { "Rehab / Rest" },
+            0,
+        )
+    } else if p.condition >= 90 {
+        (
+            if crate::i18n::is_tr() { "Çift Yoğunluk" } else { "Double Intensity" },
+            2,
+        )
+    } else if p.condition >= 76 {
+        (
+            if crate::i18n::is_tr() { "Normal Yoğunluk" } else { "Normal Intensity" },
+            1,
+        )
+    } else {
+        (
+            if crate::i18n::is_tr() { "Hafif / Yenilenme" } else { "Light / Recovery" },
+            0,
+        )
+    };
+
+    // 4. Foot & Position analysis
+    let (lf, rf) = (p.left_foot.max(1), p.right_foot.max(1));
+    let min_foot = lf.min(rf);
+    let weak_foot_needs_work = min_foot < 12;
+    let foot_note = if crate::i18n::is_tr() {
+        if min_foot >= 15 {
+            format!("Sağ {rf} / Sol {lf} · Çift Ayak")
+        } else if weak_foot_needs_work {
+            format!("Sağ {rf} / Sol {lf} · Zayıf Ayak Gelişimi")
+        } else {
+            format!("Sağ {rf} / Sol {lf} · Dengeli")
+        }
+    } else if min_foot >= 15 {
+        format!("R {rf} / L {lf} · Either Foot")
+    } else if weak_foot_needs_work {
+        format!("R {rf} / L {lf} · Weak Foot Focus")
+    } else {
+        format!("R {rf} / L {lf} · Balanced")
+    };
+
+    IndividualPlan {
+        is_starter,
+        line_label: line.label(side),
+        role_code,
+        role_name,
+        oop_code,
+        oop_name,
+        role_fit,
+        pos_rating,
+        focus_name: best_focus.0,
+        focus_score: best_focus.1,
+        intensity_label,
+        intensity_level,
+        foot_note,
+        weak_foot_needs_work,
+        weakest_attrs,
+        strongest_attrs,
+    }
+}
+
+/// 4 ana mevki grubunun (Kaleci, Savunma, Orta Saha, Hücum) ortalama rol uyumu ve kondisyonu.
+pub fn unit_stats(places: &[Place], players: &[Player]) -> [(&'static str, f32, f32, usize); 4] {
+    let labels = if crate::i18n::is_tr() {
+        ["Kaleciler", "Savunma Hattı", "Orta Saha Hattı", "Hücum Hattı"]
+    } else {
+        ["Goalkeepers", "Defensive Unit", "Midfield Unit", "Attacking Unit"]
+    };
+    let mut sums = [(0.0f32, 0.0f32, 0usize); 4];
+    for p in players {
+        let plan = player_individual_plan(p, places);
+        let is_gk = p.positions.first().copied().unwrap_or(1) >= 15;
+        let is_def = [DL, DC, DR, WBL, WBR].iter().any(|&i| p.positions.get(i).copied().unwrap_or(1) >= 15);
+        let is_att = [AML, AMR, ST].iter().any(|&i| p.positions.get(i).copied().unwrap_or(1) >= 16);
+        let unit = if is_gk {
+            0
+        } else if is_def {
+            1
+        } else if is_att {
+            3
+        } else {
+            2
+        };
+        sums[unit].0 += plan.role_fit;
+        sums[unit].1 += p.condition as f32;
+        sums[unit].2 += 1;
+    }
+    std::array::from_fn(|i| {
+        let (fit_sum, cond_sum, cnt) = sums[i];
+        if cnt == 0 {
+            (labels[i], 0.0, 0.0, 0)
+        } else {
+            (labels[i], fit_sum / cnt as f32, cond_sum / cnt as f32, cnt)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,7 +934,7 @@ mod tests {
         for &(i, r) in pos {
             positions[i] = r;
         }
-        Player { uid, name: format!("P{uid}"), positions, attributes: attrs.iter().map(|&(k, v)| (k.to_string(), v)).collect(), left_foot: 10, right_foot: 20, injured: false, banned: false }
+        Player { uid, name: format!("P{uid}"), positions, attributes: attrs.iter().map(|&(k, v)| (k.to_string(), v)).collect(), left_foot: 10, right_foot: 20, condition: 100, sharpness: 100, morale: 18, injured: false, banned: false }
     }
 
     #[test]
