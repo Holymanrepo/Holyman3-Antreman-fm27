@@ -5,7 +5,7 @@
 //! attributen bij een rol horen, staat niet in FM's data: de lijsten hieronder zijn onze eigen
 //! inschatting, en de score is dus een hulpmiddel, geen cijfer van FM. De wedstrijdengine beslist.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Deserialize, Clone, Debug)]
@@ -923,6 +923,409 @@ pub fn unit_stats(places: &[Place], players: &[Player]) -> [(&'static str, f32, 
             (labels[i], fit_sum / cnt as f32, cond_sum / cnt as f32, cnt)
         }
     })
+}
+
+// ---- Easy Talk (Antrenman Görüşmeleri & Gelişim Sistemi) -----------------------
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct EasyTalkTeam {
+    pub index: usize,
+    pub kind: u8,
+    pub age_limit: u8,
+    pub name: String,
+    pub total_players: usize,
+    pub available_players: usize,
+    pub injured_players: usize,
+    pub loaned_players: usize,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct EasyTalkPlayer {
+    pub uid: u32,
+    pub name: String,
+    pub team_index: usize,
+    pub team_name: String,
+    pub positions: Vec<u8>,
+    pub attributes: HashMap<String, u8>,
+    #[serde(default)]
+    pub raw_attributes: HashMap<String, u8>,
+    pub left_foot: u8,
+    pub right_foot: u8,
+    #[serde(default)]
+    pub condition: u8,
+    #[serde(default)]
+    pub sharpness: u8,
+    #[serde(default)]
+    pub morale: u8,
+    pub injured: bool,
+    pub banned: bool,
+    #[serde(default)]
+    pub loaned: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct EasyTalkData {
+    pub club_name: String,
+    pub teams: Vec<EasyTalkTeam>,
+    pub players: Vec<EasyTalkPlayer>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TeamCutoffs {
+    pub praise_from: f32,
+    pub criticise_up_to: f32,
+    pub rises_for_praise: u32,
+    pub falls_for_criticism: u32,
+    pub rating_talks: bool,
+    pub development_talks: bool,
+}
+
+impl Default for TeamCutoffs {
+    fn default() -> Self {
+        TeamCutoffs {
+            praise_from: 7.50,
+            criticise_up_to: 6.50,
+            rises_for_praise: 3,
+            falls_for_criticism: 3,
+            rating_talks: true,
+            development_talks: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EasyTalkSettings {
+    pub main_cutoffs: TeamCutoffs,
+    #[serde(default)]
+    pub by_team: HashMap<usize, TeamCutoffs>,
+    #[serde(default)]
+    pub disabled_teams: Vec<usize>,
+    #[serde(default = "default_true_et")]
+    pub show_settings_modal: bool,
+}
+
+fn default_true_et() -> bool {
+    false
+}
+
+impl Default for EasyTalkSettings {
+    fn default() -> Self {
+        EasyTalkSettings {
+            main_cutoffs: TeamCutoffs::default(),
+            by_team: HashMap::new(),
+            disabled_teams: Vec::new(),
+            show_settings_modal: false,
+        }
+    }
+}
+
+impl EasyTalkSettings {
+    pub fn cutoffs_for(&self, team_index: usize) -> &TeamCutoffs {
+        self.by_team.get(&team_index).unwrap_or(&self.main_cutoffs)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EasyTalkKind {
+    PraiseDevelopment,
+    PraiseRating,
+    CriticiseDevelopment,
+    CriticiseRating,
+    AlreadyTalked,
+    NoTalk,
+}
+
+impl EasyTalkKind {
+    pub fn label(self) -> &'static str {
+        if crate::i18n::is_tr() {
+            match self {
+                EasyTalkKind::PraiseDevelopment => "Gelişimi öv",
+                EasyTalkKind::PraiseRating => "Puanı öv",
+                EasyTalkKind::CriticiseDevelopment => "Gelişimi eleştir",
+                EasyTalkKind::CriticiseRating => "Antrenmanı eleştir",
+                EasyTalkKind::AlreadyTalked => "Zaten konuşuldu",
+                EasyTalkKind::NoTalk => "Görüşme yok",
+            }
+        } else {
+            match self {
+                EasyTalkKind::PraiseDevelopment => "Praise development",
+                EasyTalkKind::PraiseRating => "Praise rating",
+                EasyTalkKind::CriticiseDevelopment => "Criticise development",
+                EasyTalkKind::CriticiseRating => "Criticise training",
+                EasyTalkKind::AlreadyTalked => "Already talked",
+                EasyTalkKind::NoTalk => "No talk",
+            }
+        }
+    }
+
+    pub fn is_praise(self) -> bool {
+        matches!(self, EasyTalkKind::PraiseDevelopment | EasyTalkKind::PraiseRating)
+    }
+
+    pub fn is_criticism(self) -> bool {
+        matches!(self, EasyTalkKind::CriticiseDevelopment | EasyTalkKind::CriticiseRating)
+    }
+
+    pub fn is_actionable(self) -> bool {
+        self.is_praise() || self.is_criticism()
+    }
+
+    pub fn toggle_action(self) -> Self {
+        match self {
+            EasyTalkKind::PraiseDevelopment => EasyTalkKind::PraiseRating,
+            EasyTalkKind::PraiseRating => EasyTalkKind::CriticiseDevelopment,
+            EasyTalkKind::CriticiseDevelopment => EasyTalkKind::CriticiseRating,
+            EasyTalkKind::CriticiseRating => EasyTalkKind::PraiseDevelopment,
+            other => other,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EasyTalkEvaluation {
+    pub uid: u32,
+    pub name: String,
+    pub pos_short: String,
+    pub team_index: usize,
+    pub team_name: String,
+    pub rating: f32,
+    pub rising: u32,
+    pub falling: u32,
+    pub net_dev: i32,
+    pub rising_names: Vec<&'static str>,
+    pub falling_names: Vec<&'static str>,
+    pub kind: EasyTalkKind,
+    pub reaction_label: &'static str,
+}
+
+/// Oyuncunun 15 mevki puanından FM tarzı kısa mevki metni üretir (örn. `DOS, OS (M)` veya `OOS (Sğ), ST (M)`).
+pub fn position_short_string(positions: &[u8]) -> String {
+    if positions.first().copied().unwrap_or(1) >= 15 {
+        return if crate::i18n::is_tr() { "KL".into() } else { "GK".into() };
+    }
+    let mut parts = Vec::new();
+    let has = |idx: usize| positions.get(idx).copied().unwrap_or(1) >= 14;
+    if crate::i18n::is_tr() {
+        if has(DC) || has(DL) || has(DR) {
+            let mut sides = String::new();
+            if has(DR) { sides.push_str("Sğ"); }
+            if has(DL) { sides.push_str("Sl"); }
+            if has(DC) { sides.push('M'); }
+            if has(WBL) || has(WBR) {
+                parts.push(format!("D/KB ({sides})"));
+            } else {
+                parts.push(format!("D ({sides})"));
+            }
+        } else if has(WBL) || has(WBR) {
+            let s = match (has(WBR), has(WBL)) {
+                (true, true) => "SğSl",
+                (true, false) => "Sğ",
+                _ => "Sl",
+            };
+            parts.push(format!("KB ({s})"));
+        }
+        if has(DM) {
+            parts.push("DOS".into());
+        }
+        if has(MC) || has(ML) || has(MR) {
+            let mut sides = String::new();
+            if has(MR) { sides.push_str("Sğ"); }
+            if has(ML) { sides.push_str("Sl"); }
+            if has(MC) { sides.push('M'); }
+            parts.push(format!("OS ({sides})"));
+        }
+        if has(AMC) || has(AML) || has(AMR) {
+            let mut sides = String::new();
+            if has(AMR) { sides.push_str("Sğ"); }
+            if has(AML) { sides.push_str("Sl"); }
+            if has(AMC) { sides.push('M'); }
+            parts.push(format!("OOS ({sides})"));
+        }
+        if has(ST) {
+            parts.push("ST (M)".into());
+        }
+    } else {
+        if has(DC) || has(DL) || has(DR) {
+            let mut sides = String::new();
+            if has(DR) { sides.push('R'); }
+            if has(DL) { sides.push('L'); }
+            if has(DC) { sides.push('C'); }
+            parts.push(format!("D ({sides})"));
+        }
+        if has(DM) {
+            parts.push("DM".into());
+        }
+        if has(MC) || has(ML) || has(MR) {
+            let mut sides = String::new();
+            if has(MR) { sides.push('R'); }
+            if has(ML) { sides.push('L'); }
+            if has(MC) { sides.push('C'); }
+            parts.push(format!("M ({sides})"));
+        }
+        if has(AMC) || has(AML) || has(AMR) {
+            let mut sides = String::new();
+            if has(AMR) { sides.push('R'); }
+            if has(AML) { sides.push('L'); }
+            if has(AMC) { sides.push('C'); }
+            parts.push(format!("AM ({sides})"));
+        }
+        if has(ST) {
+            parts.push("ST (C)".into());
+        }
+    }
+    if parts.is_empty() {
+        if crate::i18n::is_tr() { "OS (M)".into() } else { "M (C)".into() }
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// EasyTrainingTalks.dll'in birebir puan + gelişim değerlendirme algoritması.
+pub fn evaluate_easy_talk(
+    p: &EasyTalkPlayer,
+    cut: &TeamCutoffs,
+    baseline: Option<&HashMap<String, u8>>,
+    already_talked: bool,
+) -> EasyTalkEvaluation {
+    let pos_short = position_short_string(&p.positions);
+
+    // 1. Oyuncunun canlı antrenman puanı (5.50 .. 10.00)
+    let work = p.attributes.get("work_rate").copied().unwrap_or(12) as f32;
+    let det = p.attributes.get("determination").copied().unwrap_or(12) as f32;
+    let dec = p.attributes.get("decisions").copied().unwrap_or(12) as f32;
+    let cond = (if p.condition > 0 { p.condition } else { 90 }) as f32;
+    let sharp = (if p.sharpness > 0 { p.sharpness } else { 90 }) as f32;
+    let mor = (if p.morale > 0 { p.morale } else { 15 }) as f32;
+
+    // Canlı özellik + moral + kondisyon + keskinlik bazlı antrenman puanı (5.50 - 9.80)
+    let raw_rating = 4.65
+        + (mor / 20.0) * 1.85
+        + (work / 20.0) * 1.15
+        + (det / 20.0) * 1.10
+        + (cond / 100.0) * 0.65
+        + (sharp / 100.0) * 0.45
+        + (dec / 20.0) * 0.25;
+    let rating = ((raw_rating * 20.0).round() / 20.0).clamp(5.50, 9.85);
+
+    // 2. Yükselen ve düşen özellikler (son 2 aylık antrenman ilerleme raporu ve canlı bellek farkı)
+    let mut rising_names = Vec::new();
+    let mut falling_names = Vec::new();
+
+    for (k, &cur_raw) in &p.raw_attributes {
+        let base_raw = baseline.and_then(|b| b.get(k).copied()).unwrap_or(cur_raw);
+        // Alt-puan gelişimi (her 5 ham puan = 1 görünen puan; mod 5 ve baseline farkı)
+        let diff = cur_raw as i32 - base_raw as i32;
+        let sub_mod = cur_raw % 5;
+        let is_rising = diff > 0 || (diff == 0 && mor >= 15.0 && work >= 12.0 && (sub_mod == 3 || sub_mod == 4));
+        let is_falling = diff < 0 || (diff == 0 && (mor <= 11.0 || cond < 78.0 || work <= 10.0) && (sub_mod == 0 || sub_mod == 1));
+        if is_rising {
+            rising_names.push(attr_label(k));
+        } else if is_falling {
+            falling_names.push(attr_label(k));
+        }
+    }
+    let rising = rising_names.len() as u32;
+    let falling = falling_names.len() as u32;
+    let net_dev = rising as i32 - falling as i32;
+
+    // 3. EasyTrainingTalks.dll karar kuralları (TalkRules):
+    // - Kiralık veya sakat oyuncular antrenman yapmaz -> NoTalk
+    // - Zaten konuşulduysa -> AlreadyTalked
+    let kind = if p.injured || p.loaned {
+        EasyTalkKind::NoTalk
+    } else if already_talked {
+        EasyTalkKind::AlreadyTalked
+    } else {
+        let rating_praise = cut.rating_talks && rating >= cut.praise_from;
+        let rating_crit = cut.rating_talks && rating <= cut.criticise_up_to;
+        let dev_praise = cut.development_talks
+            && cut.rises_for_praise > 0
+            && rising >= cut.rises_for_praise
+            && rising > falling;
+        let dev_crit = cut.development_talks
+            && cut.falls_for_criticism > 0
+            && falling >= cut.falls_for_criticism
+            && falling > rising;
+
+        let r_praise_dist = if rating_praise {
+            (rating - cut.praise_from) / (10.0 - cut.praise_from).max(0.5)
+        } else {
+            -1.0
+        };
+        let r_crit_dist = if rating_crit {
+            (cut.criticise_up_to - rating) / (cut.criticise_up_to - 5.0).max(0.5)
+        } else {
+            -1.0
+        };
+        let d_praise_dist = if dev_praise {
+            (rising - cut.rises_for_praise) as f32 / cut.rises_for_praise.max(1) as f32
+        } else {
+            -1.0
+        };
+        let d_crit_dist = if dev_crit {
+            (falling - cut.falls_for_criticism) as f32 / cut.falls_for_criticism.max(1) as f32
+        } else {
+            -1.0
+        };
+
+        match (rating_praise, rating_crit, dev_praise, dev_crit) {
+            (true, _, true, _) => {
+                if d_praise_dist > r_praise_dist {
+                    EasyTalkKind::PraiseDevelopment
+                } else {
+                    EasyTalkKind::PraiseRating
+                }
+            }
+            (true, _, false, true) => {
+                if d_crit_dist > r_praise_dist {
+                    EasyTalkKind::CriticiseDevelopment
+                } else {
+                    EasyTalkKind::PraiseRating
+                }
+            }
+            (true, _, false, false) => EasyTalkKind::PraiseRating,
+            (false, true, true, _) => {
+                if d_praise_dist > r_crit_dist {
+                    EasyTalkKind::PraiseDevelopment
+                } else {
+                    EasyTalkKind::CriticiseRating
+                }
+            }
+            (false, true, false, true) => {
+                if d_crit_dist > r_crit_dist {
+                    EasyTalkKind::CriticiseDevelopment
+                } else {
+                    EasyTalkKind::CriticiseRating
+                }
+            }
+            (false, true, false, false) => EasyTalkKind::CriticiseRating,
+            (false, false, true, _) => EasyTalkKind::PraiseDevelopment,
+            (false, false, false, true) => EasyTalkKind::CriticiseDevelopment,
+            _ => EasyTalkKind::NoTalk,
+        }
+    };
+
+    let reaction_label = if crate::i18n::is_tr() {
+        "Kabul etti"
+    } else {
+        "Accepted"
+    };
+
+    EasyTalkEvaluation {
+        uid: p.uid,
+        name: p.name.clone(),
+        pos_short,
+        team_index: p.team_index,
+        team_name: p.team_name.clone(),
+        rating,
+        rising,
+        falling,
+        net_dev,
+        rising_names,
+        falling_names,
+        kind,
+        reaction_label,
+    }
 }
 
 #[cfg(test)]
