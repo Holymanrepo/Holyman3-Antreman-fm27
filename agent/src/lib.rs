@@ -215,6 +215,20 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
             tactic::apply_individual_training(&uids(req), mode).map(|o| json!(o))
         }
+        "easy_talks" => tactic::easy_talk_data().map(|d| json!(d)),
+        "apply_easy_talks" => {
+            let praise: Vec<u32> = req
+                .get("praise_uids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let crit: Vec<u32> = req
+                .get("criticise_uids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            tactic::apply_easy_talks(&praise, &crit).map(|o| json!(o))
+        }
         "max_understanding" => {
             let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
             understanding::maximise(&uids(req), dry).map(|m| json!(m))
