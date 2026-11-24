@@ -80,12 +80,46 @@ struct Settings {
     /// Easy Talk (Antrenman Görüşmeleri) eşikleri ve takım ayarları.
     #[serde(default)]
     easy_talk: crate::tactics::EasyTalkSettings,
+    /// Oyuncu yüzlerinin (Facepack) bulunduğu klasör.
+    #[serde(default = "default_faces_dir")]
+    faces_dir: String,
+    /// FM27 graphics ana klasörü (kulüp logoları, formalar, yüzler vb. için).
+    #[serde(default = "default_graphics_dir")]
+    graphics_dir: String,
     planner: PlannerSettings,
+}
+
+fn default_graphics_dir() -> String {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let p = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 27\\graphics");
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+        let p26 = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 26\\graphics");
+        if p26.exists() {
+            return p26.to_string_lossy().into_owned();
+        }
+    }
+    "C:\\Users\\Emre\\Documents\\Sports Interactive\\Football Manager 27\\graphics".into()
+}
+
+fn default_faces_dir() -> String {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let p = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 27\\graphics\\faces");
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+        let p26 = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 26\\graphics\\faces");
+        if p26.exists() {
+            return p26.to_string_lossy().into_owned();
+        }
+    }
+    "C:\\Users\\Emre\\Documents\\Sports Interactive\\Football Manager 27\\graphics\\faces".into()
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, easy_talk: crate::tactics::EasyTalkSettings::default(), planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, easy_talk: crate::tactics::EasyTalkSettings::default(), faces_dir: default_faces_dir(), graphics_dir: default_graphics_dir(), planner: PlannerSettings::default() }
     }
 }
 
@@ -116,6 +150,7 @@ fn calendar_file() -> PathBuf {
 enum Page {
     Overview,
     Training,
+    EasyTalk,
     Planning,
     Squad,
     Tactics,
@@ -167,17 +202,135 @@ struct App {
     easy_talk_cutoff_team: usize,
     easy_talk_show_summary: bool,
     easy_talk_show_role_focus: bool,
+    face_textures: std::collections::HashMap<u32, Option<egui::TextureHandle>>,
+    club_logo_textures: std::collections::HashMap<u32, Option<egui::TextureHandle>>,
     frames: u32,
     logo_tex: Option<egui::TextureHandle>,
-    update_rx: Option<mpsc::Receiver<Result<Option<(String, String)>, String>>>,
-    latest_release: Option<(String, String)>,
+    update_rx: Option<mpsc::Receiver<Result<Option<ReleaseInfo>, String>>>,
+    latest_release: Option<ReleaseInfo>,
     update_status: String,
+    last_update_check: std::time::Instant,
+    dismissed_release_tag: Option<String>,
+    self_update_rx: Option<mpsc::Receiver<Result<(), String>>>,
+    self_updating: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseInfo {
+    tag: String,
+    html_url: String,
+    exe_url: Option<String>,
+    notes: String,
 }
 
 const GITHUB_REPO_URL: &str = "https://github.com/Holymanrepo/Holyman3-Antreman-fm27";
 const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Holymanrepo/Holyman3-Antreman-fm27/releases/latest";
 
-fn spawn_update_check() -> mpsc::Receiver<Result<Option<(String, String)>, String>> {
+fn find_club_logo_in_graphics(graphics_dir: &str, uid: u32) -> Option<PathBuf> {
+    let base = PathBuf::from(graphics_dir.trim());
+    if !base.is_dir() {
+        return None;
+    }
+    let fname = format!("{uid}.png");
+    let direct_candidates = [
+        base.join("Logos TCM24\\1-Team\\Clubs\\normal").join(&fname),
+        base.join("Logos TCM24\\1-Team\\Clubs\\small").join(&fname),
+        base.join("logos\\normal").join(&fname),
+        base.join("logos").join(&fname),
+    ];
+    for c in direct_candidates {
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+
+    fn search_dir(dir: &std::path::Path, target_name: &str, depth: usize, fallback: &mut Option<PathBuf>) -> Option<PathBuf> {
+        if depth > 6 {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if path.is_file() {
+                if name_str.eq_ignore_ascii_case(target_name) {
+                    let full = path.to_string_lossy().to_ascii_lowercase();
+                    if full.contains("clubs") && full.contains("normal") && !full.contains("@2x") {
+                        return Some(path);
+                    }
+                    if fallback.is_none() || (full.contains("clubs") && !full.contains("small")) {
+                        *fallback = Some(path);
+                    }
+                }
+            } else if path.is_dir() {
+                let low = name_str.to_ascii_lowercase();
+                if matches!(
+                    low.as_str(),
+                    "faces"
+                        | "iconfaces"
+                        | "kits"
+                        | "city pics"
+                        | "stadium"
+                        | "trophies"
+                        | "fmve stadium"
+                        | "fmve stadium links"
+                        | "fmve trophies"
+                        | "fmve trophies links"
+                        | "sortitoutsi"
+                ) {
+                    continue;
+                }
+                subdirs.push(path);
+            }
+        }
+        for sub in subdirs {
+            if let Some(found) = search_dir(&sub, target_name, depth + 1, fallback) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut fallback = None;
+    let tcm = base.join("Logos TCM24");
+    if tcm.is_dir() {
+        if let Some(p) = search_dir(&tcm, &fname, 0, &mut fallback) {
+            return Some(p);
+        }
+        if fallback.is_some() {
+            return fallback;
+        }
+    }
+    search_dir(&base, &fname, 0, &mut fallback).or(fallback)
+}
+
+fn is_newer_version(remote: &str, local: &str) -> bool {
+    let parse = |s: &str| -> Vec<u32> {
+        s.trim_start_matches('v')
+            .trim()
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+    let r = parse(remote);
+    let l = parse(local);
+    let len = r.len().max(l.len());
+    for i in 0..len {
+        let rv = r.get(i).copied().unwrap_or(0);
+        let lv = l.get(i).copied().unwrap_or(0);
+        if rv > lv {
+            return true;
+        }
+        if rv < lv {
+            return false;
+        }
+    }
+    false
+}
+
+fn spawn_update_check() -> mpsc::Receiver<Result<Option<ReleaseInfo>, String>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         #[cfg(windows)]
@@ -201,13 +354,40 @@ fn spawn_update_check() -> mpsc::Receiver<Result<Option<(String, String)>, Strin
                     if let Some(tag) = v.get("tag_name").and_then(|t| t.as_str()) {
                         let clean = tag.trim_start_matches('v').trim();
                         let current = env!("CARGO_PKG_VERSION").trim_start_matches('v').trim();
-                        let url = v
+                        let html_url = v
                             .get("html_url")
                             .and_then(|u| u.as_str())
                             .unwrap_or("https://github.com/Holymanrepo/Holyman3-Antreman-fm27/releases/latest")
                             .to_string();
-                        if !clean.is_empty() && clean != current {
-                            Ok(Some((tag.to_string(), url)))
+                        let notes = v
+                            .get("body")
+                            .and_then(|b| b.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let exe_url = v
+                            .get("assets")
+                            .and_then(|a| a.as_array())
+                            .and_then(|arr| {
+                                arr.iter().find_map(|asset| {
+                                    let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                    if name.to_ascii_lowercase().ends_with(".exe") {
+                                        asset
+                                            .get("browser_download_url")
+                                            .and_then(|u| u.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                        if !clean.is_empty() && is_newer_version(clean, current) {
+                            Ok(Some(ReleaseInfo {
+                                tag: tag.to_string(),
+                                html_url,
+                                exe_url,
+                                notes,
+                            }))
                         } else {
                             Ok(None)
                         }
@@ -224,8 +404,61 @@ fn spawn_update_check() -> mpsc::Receiver<Result<Option<(String, String)>, Strin
     rx
 }
 
+fn spawn_self_update(exe_url: String) -> mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let res = (|| -> Result<(), String> {
+            let cur_exe = std::env::current_exe().map_err(|e| format!("Uygulama yolu alınamadı: {e}"))?;
+            let new_exe = cur_exe.with_extension("new.exe");
+            let old_exe = cur_exe.with_extension("old.exe");
+
+            #[cfg(windows)]
+            use std::os::windows::process::CommandExt;
+            let mut cmd = std::process::Command::new("curl");
+            cmd.args([
+                "-fL",
+                "--max-time",
+                "120",
+                "-H",
+                "User-Agent: FM27-Trainer-Holyman3",
+                "-o",
+            ]);
+            cmd.arg(&new_exe);
+            cmd.arg(&exe_url);
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000);
+
+            let out = cmd.output().map_err(|e| format!("İndirme başlatılamadı: {e}"))?;
+            if !out.status.success() {
+                let _ = std::fs::remove_file(&new_exe);
+                return Err(t!("Yeni sürüm indirilemedi.", "Failed to download new version.").into());
+            }
+            let meta = std::fs::metadata(&new_exe).map_err(|e| format!("İndirilen dosya okunamadı: {e}"))?;
+            if meta.len() < 500_000 {
+                let _ = std::fs::remove_file(&new_exe);
+                return Err(t!("İndirilen dosya eksik veya bozuk.", "Downloaded file is incomplete or corrupted.").into());
+            }
+
+            let _ = std::fs::remove_file(&old_exe);
+            std::fs::rename(&cur_exe, &old_exe).map_err(|e| format!("Mevcut dosya yedeklenemedi: {e}"))?;
+            if let Err(e) = std::fs::rename(&new_exe, &cur_exe) {
+                let _ = std::fs::rename(&old_exe, &cur_exe);
+                return Err(format!("Yeni sürüm yerleştirilemedi: {e}"));
+            }
+
+            let _ = std::process::Command::new(&cur_exe).spawn();
+            Ok(())
+        })();
+        let _ = tx.send(res);
+    });
+    rx
+}
+
 impl App {
     fn new() -> Self {
+        if let Ok(cur_exe) = std::env::current_exe() {
+            let _ = std::fs::remove_file(cur_exe.with_extension("old.exe"));
+        }
         let mut settings: Settings = std::fs::read_to_string(settings_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         settings.allow_untested = true;
         i18n::set(settings.lang);
@@ -240,6 +473,7 @@ impl App {
         // FM27_PAGE=training|planning|club|squad|sell|buy|settings opent direct die pagina (handig bij testen)
         let page = match std::env::var("FM27_PAGE").unwrap_or_default().as_str() {
             "training" => Page::Training,
+            "easytalk" => Page::EasyTalk,
             "planning" => Page::Planning,
             "squad" => Page::Squad,
             "tactics" => Page::Tactics,
@@ -279,23 +513,55 @@ impl App {
             easy_talk_cutoff_team: 0,
             easy_talk_show_summary: false,
             easy_talk_show_role_focus: false,
+            face_textures: std::collections::HashMap::new(),
+            club_logo_textures: std::collections::HashMap::new(),
             live: LiveState::default(),
             frames: 0,
             logo_tex: None,
             update_rx: Some(spawn_update_check()),
             latest_release: None,
             update_status: String::new(),
+            last_update_check: std::time::Instant::now(),
+            dismissed_release_tag: None,
+            self_update_rx: None,
+            self_updating: false,
         }
     }
 
-    fn poll_update(&mut self) {
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.self_update_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.self_update_rx = None;
+                self.self_updating = false;
+                match res {
+                    Ok(()) => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        return;
+                    }
+                    Err(e) => {
+                        self.update_status = e;
+                    }
+                }
+            }
+        }
+
+        // Her 10 dakikada bir otomatik arka plan güncelleme kontrolü
+        if self.update_rx.is_none()
+            && !self.self_updating
+            && std::env::var_os("FM27_SNAPSHOT").is_none()
+            && self.last_update_check.elapsed().as_secs() >= 600
+        {
+            self.last_update_check = std::time::Instant::now();
+            self.update_rx = Some(spawn_update_check());
+        }
+
         let Some(rx) = &self.update_rx else { return };
         if let Ok(res) = rx.try_recv() {
             self.update_rx = None;
             match res {
-                Ok(Some((tag, url))) => {
-                    self.update_status = t!(format!("Yeni sürüm mevcut: {tag}"), format!("New version available: {tag}"));
-                    self.latest_release = Some((tag, url));
+                Ok(Some(info)) => {
+                    self.update_status = t!(format!("Yeni sürüm mevcut: {}", info.tag), format!("New version available: {}", info.tag));
+                    self.latest_release = Some(info);
                 }
                 Ok(None) => {
                     self.update_status = t!(
@@ -534,6 +800,7 @@ impl App {
                 let items = [
                     (Page::Overview, icon::GAUGE, t!("Genel Bakış", "Overview")),
                     (Page::Training, icon::BARBELL, t!("Antrenman", "Training")),
+                    (Page::EasyTalk, icon::SMILEY, t!("Easy Talk", "Easy Talk")),
                     (Page::Planning, icon::CALENDAR_DOTS, t!("Planlama", "Planning")),
                     (Page::Squad, icon::USERS_THREE, t!("Kadro", "Squad")),
                     (Page::Tactics, icon::STRATEGY, t!("Taktik", "Tactics")),
@@ -551,17 +818,29 @@ impl App {
                         env!("CARGO_PKG_VERSION"),
                         t!("Türkçe", "English")
                     )));
-                    if let Some((tag, url)) = self.latest_release.clone() {
+                    if let Some(rel) = self.latest_release.clone() {
                         ui.add_space(6.0);
+                        let lbl = if self.self_updating {
+                            t!("Güncelleniyor…", "Updating…").to_string()
+                        } else {
+                            t!(format!("Yeni sürüm ({}) · Güncelle", rel.tag), format!("New version ({}) · Update", rel.tag))
+                        };
                         if theme::primary_button(
                             ui,
                             icon::ARROW_CLOCKWISE,
-                            &t!(format!("Yeni sürüm ({tag}) · İndir"), format!("New version ({tag}) · Download")),
-                            true,
+                            &lbl,
+                            !self.self_updating,
                         )
                         .clicked()
                         {
-                            open_url(&url);
+                            self.dismissed_release_tag = None;
+                            if let Some(exe) = rel.exe_url {
+                                self.self_updating = true;
+                                self.update_status = t!("Yeni sürüm indiriliyor ve kuruluyor…", "Downloading and installing new version…").into();
+                                self.self_update_rx = Some(spawn_self_update(exe));
+                            } else {
+                                open_url(&rel.html_url);
+                            }
                         }
                     }
                     ui.add_space(8.0);
@@ -594,22 +873,55 @@ impl App {
                     });
                     ui.add_space(8.0);
                     let sb_w2 = (ui.available_width() - 26.0).max(80.0);
+                    let club_uid = self.live.club_uid();
+                    if let Some(cuid) = club_uid {
+                        if !self.club_logo_textures.contains_key(&cuid) {
+                            let loaded = (|| -> Option<egui::TextureHandle> {
+                                let path = find_club_logo_in_graphics(&self.settings.graphics_dir, cuid)?;
+                                let img = image::open(&path).ok()?.into_rgba8();
+                                let (w, h) = img.dimensions();
+                                let cimg = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+                                Some(ctx.load_texture(format!("club_logo_{cuid}"), cimg, egui::TextureOptions::LINEAR))
+                            })();
+                            self.club_logo_textures.insert(cuid, loaded);
+                        }
+                    }
+                    let club_logo = club_uid.and_then(|u| self.club_logo_textures.get(&u)).and_then(|o| o.clone());
+
                     Frame::new().fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(12)).show(ui, |ui| {
                         ui.set_width(sb_w2);
                         ui.set_max_width(sb_w2);
-                        ui.horizontal(|ui| {
-                            let (c, txt) = if !agent::LIVE_SUPPORTED {
-                                (theme::TEXT_FAINT, t!("Canlı: desteklenmiyor", "Live: unsupported"))
-                            } else if self.live.connected {
-                                (theme::SUCCESS, t!("FM27'ye Bağlı", "Connected to FM27"))
-                            } else {
-                                (theme::TEXT_FAINT, t!("Bağlı değil", "Not connected"))
-                            };
-                            theme::status_dot(ui, c);
-                            ui.label(RichText::new(txt).size(13.0).color(theme::TEXT));
-                        });
-                        if let Some(n) = self.live.club_name() {
-                            ui.label(theme::faint(n));
+                        let (c, txt) = if !agent::LIVE_SUPPORTED {
+                            (theme::TEXT_FAINT, t!("Canlı: desteklenmiyor", "Live: unsupported"))
+                        } else if self.live.connected {
+                            (theme::SUCCESS, t!("FM27'ye Bağlı", "Connected to FM27"))
+                        } else {
+                            (theme::TEXT_FAINT, t!("Bağlı değil", "Not connected"))
+                        };
+                        if let Some(tex) = club_logo {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                ui.add(egui::Image::from_texture(&tex).fit_to_exact_size(vec2(34.0, 34.0)));
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 3.0;
+                                    if let Some(n) = self.live.club_name() {
+                                        ui.add(egui::Label::new(RichText::new(n).size(13.0).strong().color(theme::TEXT)).truncate());
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        theme::status_dot(ui, c);
+                                        ui.label(RichText::new(txt).size(12.0).color(theme::TEXT_DIM));
+                                    });
+                                });
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                theme::status_dot(ui, c);
+                                ui.label(RichText::new(txt).size(13.0).color(theme::TEXT));
+                            });
+                            if let Some(n) = self.live.club_name() {
+                                ui.label(theme::faint(n));
+                            }
                         }
                     });
                 });
@@ -1463,6 +1775,1171 @@ impl App {
         }
     }
 
+    // -------------------------------------------------------------------- easy talk
+
+    fn page_easy_talk(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        use crate::tactics::{self as tx, EasyTalkKind};
+        let from_file = std::env::var_os("FM27_TACTICS_JSON");
+        if let (Some(f), None) = (&from_file, &self.live.tactics) {
+            self.live.tactics = std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str(&t).ok());
+        }
+        let connected = self.live.connected || (from_file.is_some() && self.live.tactics.is_some());
+        let busy = self.live.busy() || self.live.tactics_busy();
+        if connected && !self.tactics_asked && from_file.is_none() {
+            self.tactics_asked = true;
+            self.live.load_tactics(ctx);
+        }
+        let mut action: Option<(String, Value)> = None;
+
+        // EasyTalk renkleri (FMSeasonHub EasyTrainingTalks teması)
+        let green_praise = Color32::from_rgb(56, 178, 92);
+        let red_crit = Color32::from_rgb(209, 69, 69);
+        let pink_confirm = Color32::from_rgb(232, 30, 118);
+        let gray_between = Color32::from_rgb(122, 130, 148);
+
+        theme::page_header(
+            ui,
+            t!("EASY TALK · Kadro > Antrenman", "EASY TALK · Squad > Training"),
+            t!(
+                "Kulüp takımlarının (A Takım, U-20, U-18) antrenman puanı ve özellik gelişimine göre toplu övgü & eleştiri görüşmeleri.",
+                "Batch training praise & criticism talks by training rating and attribute development across all club teams (First Team, U-20, U-18)."
+            ),
+            |ui| {
+                if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Geri Al", "Undo"), connected && !busy).clicked() {
+                    action = Some((t!("geri al", "undo").into(), json!({"cmd": "undo"})));
+                }
+                if theme::button(
+                    ui,
+                    icon::GEAR_SIX,
+                    if self.easy_talk_settings_open {
+                        t!("Görüşmelere Dön", "Back to Talks")
+                    } else {
+                        t!("... Ayarlar", "... Settings")
+                    },
+                    true,
+                )
+                .clicked()
+                {
+                    self.easy_talk_settings_open = !self.easy_talk_settings_open;
+                }
+                if busy {
+                    ui.spinner();
+                }
+            },
+        );
+
+        if let Some((l, r)) = action.take() {
+            self.live.refresh(ctx, &l, Some(r));
+        }
+        let (m, e) = (self.live.status.clone(), self.live.status_error);
+        self.status_line(ui, &m, e);
+
+        if !connected {
+            self.connect_card(ui, ctx);
+            return;
+        }
+
+        // EasyTalk verisi yoksa aktif taktik kadrosundan yedek oluştur
+        let et_data = match &self.live.easy_talks {
+            Some(d) if !d.players.is_empty() => d.clone(),
+            _ => {
+                if let Some(td) = &self.live.tactics {
+                    let cname = self.live.club_name().unwrap_or_else(|| "A Takım".into());
+                    let players: Vec<tx::EasyTalkPlayer> = td
+                        .players
+                        .iter()
+                        .map(|p| tx::EasyTalkPlayer {
+                            uid: p.uid,
+                            name: p.name.clone(),
+                            team_index: 0,
+                            team_name: cname.clone(),
+                            positions: p.positions.clone(),
+                            attributes: p.attributes.clone(),
+                            raw_attributes: p.attributes.iter().map(|(k, v)| (k.clone(), v.saturating_mul(5))).collect(),
+                            left_foot: p.left_foot,
+                            right_foot: p.right_foot,
+                            condition: p.condition,
+                            sharpness: p.sharpness,
+                            morale: p.morale,
+                            injured: p.injured,
+                            banned: p.banned,
+                            loaned: false,
+                        })
+                        .collect();
+                    let avail = players.iter().filter(|p| !p.injured && !p.loaned).count();
+                    let inj = players.iter().filter(|p| p.injured).count();
+                    tx::EasyTalkData {
+                        club_name: cname.clone(),
+                        teams: vec![tx::EasyTalkTeam {
+                            index: 0,
+                            kind: 0,
+                            age_limit: 100,
+                            name: cname,
+                            total_players: players.len(),
+                            available_players: avail,
+                            injured_players: inj,
+                            loaned_players: 0,
+                        }],
+                        players,
+                    }
+                } else {
+                    theme::card(ui, |ui| {
+                        ui.label(theme::faint(t!("Kadro okunuyor…", "Reading squad…")));
+                    });
+                    return;
+                }
+            }
+        };
+
+        // Seçili takımlara göre oyuncuları değerlendir
+        let mut evals: Vec<tx::EasyTalkEvaluation> = Vec::new();
+        for p in &et_data.players {
+            if self.settings.easy_talk.disabled_teams.contains(&p.team_index) {
+                continue;
+            }
+            let cut = self.settings.easy_talk.cutoffs_for(p.team_index);
+            let base = self.live.easy_talks_baseline.get(&p.uid);
+            let talked = self.live.easy_talks_talked.contains(&p.uid);
+            let mut ev = tx::evaluate_easy_talk(p, cut, base, talked);
+            if let Some(&ov) = self.live.easy_talks_override.get(&p.uid) {
+                if ev.kind != EasyTalkKind::AlreadyTalked {
+                    ev.kind = ov;
+                }
+            }
+            evals.push(ev);
+        }
+
+        // ---- AYARLAR MODU (Görsel 1: TAKIMLAR, EŞİKLER KADROYU NASIL BÖLÜYOR, PUAN, GELİŞİM)
+        if self.easy_talk_settings_open {
+            self.render_easy_talk_settings(ui, &et_data, &evals, green_praise, red_crit, pink_confirm, gray_between);
+            return;
+        }
+
+        // İstatistik sayıları
+        let mut cnt_praise_dev = 0usize;
+        let mut cnt_praise_rat = 0usize;
+        let mut cnt_crit_dev = 0usize;
+        let mut cnt_crit_rat = 0usize;
+        let mut cnt_talked = 0usize;
+        let mut cnt_no_talk = 0usize;
+        let mut batch_praise_uids: Vec<u32> = Vec::new();
+        let mut batch_crit_uids: Vec<u32> = Vec::new();
+
+        for ev in &evals {
+            let left_out = self.live.easy_talks_left_out.contains(&ev.uid);
+            match ev.kind {
+                EasyTalkKind::PraiseDevelopment => {
+                    cnt_praise_dev += 1;
+                    if !left_out {
+                        batch_praise_uids.push(ev.uid);
+                    }
+                }
+                EasyTalkKind::PraiseRating => {
+                    cnt_praise_rat += 1;
+                    if !left_out {
+                        batch_praise_uids.push(ev.uid);
+                    }
+                }
+                EasyTalkKind::CriticiseDevelopment => {
+                    cnt_crit_dev += 1;
+                    if !left_out {
+                        batch_crit_uids.push(ev.uid);
+                    }
+                }
+                EasyTalkKind::CriticiseRating => {
+                    cnt_crit_rat += 1;
+                    if !left_out {
+                        batch_crit_uids.push(ev.uid);
+                    }
+                }
+                EasyTalkKind::AlreadyTalked => cnt_talked += 1,
+                EasyTalkKind::NoTalk => cnt_no_talk += 1,
+            }
+        }
+        let actionable_total = batch_praise_uids.len() + batch_crit_uids.len();
+        let total_players_shown = evals.len();
+
+        // ---- ÜST BAR: "76 oyuncu · bu turda 23 görüşme" + Takım Filtreleri + Dağılım Çubuğu
+        theme::card(ui, |ui| {
+            ui.label(
+                RichText::new(t!(
+                    format!("{total_players_shown} oyuncu · bu turda {actionable_total} görüşme"),
+                    format!("{total_players_shown} players · {actionable_total} talks in this batch")
+                ))
+                .size(14.0)
+                .color(theme::TEXT_DIM),
+            );
+            ui.add_space(6.0);
+
+            // Takım Seçim Hapları: [✓ Tümü 76] [✓ Como 32] [✓ U-20 Takımı 19] [✓ U-18 Takımı 25]
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::dim(t!("Takımlar", "Teams")));
+                let all_enabled = self.settings.easy_talk.disabled_teams.is_empty();
+                let all_avail: usize = et_data.teams.iter().map(|t| t.available_players).sum();
+                let all_lbl = t!(format!("✓ Tümü {all_avail}"), format!("✓ All {all_avail}"));
+                if theme::clickable_pill(
+                    ui,
+                    &all_lbl,
+                    if all_enabled { theme::INFO } else { theme::TEXT_FAINT },
+                    false,
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+                {
+                    if all_enabled {
+                        self.settings.easy_talk.disabled_teams = et_data.teams.iter().map(|t| t.index).collect();
+                    } else {
+                        self.settings.easy_talk.disabled_teams.clear();
+                    }
+                    self.save_settings();
+                }
+
+                for tm in &et_data.teams {
+                    let enabled = !self.settings.easy_talk.disabled_teams.contains(&tm.index);
+                    let mark = if enabled { "✓ " } else { "" };
+                    let lbl = format!("{mark}{} {}", tm.name, tm.available_players);
+                    if theme::clickable_pill(ui, &lbl, if enabled { theme::INFO } else { theme::TEXT_FAINT }, false)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        if enabled {
+                            self.settings.easy_talk.disabled_teams.push(tm.index);
+                        } else {
+                            self.settings.easy_talk.disabled_teams.retain(|&x| x != tm.index);
+                        }
+                        self.save_settings();
+                    }
+                }
+            });
+            ui.add_space(8.0);
+
+            // Çok renkli yatay dağılım çubuğu
+            let bar_w = ui.available_width().max(100.0);
+            let (bar_rect, _) = ui.allocate_exact_size(vec2(bar_w, 7.0), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(bar_rect, CornerRadius::same(3), theme::TRACK);
+            let tot = total_players_shown.max(1) as f32;
+            let segments = [
+                (cnt_praise_dev, green_praise),
+                (cnt_praise_rat, Color32::from_rgb(42, 152, 78)),
+                (cnt_crit_dev + cnt_crit_rat, red_crit),
+                (cnt_talked, Color32::from_rgb(76, 82, 96)),
+                (cnt_no_talk, Color32::from_rgb(48, 52, 64)),
+            ];
+            let mut x = bar_rect.left();
+            for (cnt, col) in segments {
+                if cnt > 0 {
+                    let sw = (bar_w * (cnt as f32 / tot)).max(3.0).min(bar_rect.right() - x);
+                    if sw > 0.0 {
+                        let r = egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), vec2(sw, bar_rect.height()));
+                        painter.rect_filled(r, CornerRadius::same(2), col);
+                        x += sw;
+                    }
+                }
+            }
+            ui.add_space(6.0);
+
+            // Renkli açıklama satırı: ■ Gelişimi öv 7  ■ Puanı öv 8  ■ Gelişimi eleştir 8  ■ Zaten konuşuldu 48  ■ Görüşme yok 5
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let legend_item = |ui: &mut Ui, col: Color32, label: &str, count: usize| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        theme::status_dot(ui, col);
+                        ui.label(RichText::new(label).size(12.5).color(theme::TEXT_DIM));
+                        ui.label(RichText::new(count.to_string()).size(12.5).strong().color(theme::TEXT));
+                    });
+                };
+                legend_item(ui, green_praise, t!("Gelişimi öv", "Praise development"), cnt_praise_dev);
+                legend_item(ui, Color32::from_rgb(42, 152, 78), t!("Puanı öv", "Praise rating"), cnt_praise_rat);
+                legend_item(ui, red_crit, t!("Gelişimi eleştir", "Criticise development"), cnt_crit_dev);
+                if cnt_crit_rat > 0 {
+                    legend_item(ui, red_crit, t!("Antrenmanı eleştir", "Criticise training"), cnt_crit_rat);
+                }
+                legend_item(ui, gray_between, t!("Zaten konuşuldu", "Already talked"), cnt_talked);
+                legend_item(ui, theme::TEXT_FAINT, t!("Görüşme yok", "No talk"), cnt_no_talk);
+            });
+        });
+        ui.add_space(12.0);
+
+        // ---- ANA GÖRÜNÜM: Sol (2 Sütunlu Görüşme Tablosu) + Sağ (KADRO, GEÇERLİ EŞİKLER, ZATEN KONUŞULDU, GÖRÜŞME YOK)
+        let mut actionable_rows: Vec<tx::EasyTalkEvaluation> = evals
+            .iter()
+            .filter(|e| e.kind.is_actionable())
+            .cloned()
+            .collect();
+        actionable_rows.sort_by(|a, b| {
+            a.kind
+                .cmp(&b.kind)
+                .then_with(|| b.rating.total_cmp(&a.rating))
+                .then_with(|| b.net_dev.cmp(&a.net_dev))
+        });
+
+        let talked_rows: Vec<&tx::EasyTalkEvaluation> = evals
+            .iter()
+            .filter(|e| e.kind == EasyTalkKind::AlreadyTalked)
+            .collect();
+
+        let total_avail = ui.available_width();
+        let right_w = 248.0f32.min(total_avail * 0.27);
+        let left_w = (total_avail - right_w - 14.0).max(400.0);
+
+        ui.horizontal_top(|ui| {
+            // SOL PANEL: 2 sütunlu oyuncu görüşme tablosu + alt onay barı
+            ui.vertical(|ui| {
+                ui.set_width(left_w);
+                ui.set_max_width(left_w);
+
+                theme::card(ui, |ui| {
+                    if actionable_rows.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(28.0);
+                            ui.label(theme::h2(t!(
+                                "Geçerli eşikler ve takımlarla görüşülecek kimse yok.",
+                                "Nobody to talk to with the current cutoffs and teams."
+                            )));
+                            ui.add_space(6.0);
+                            ui.label(theme::dim(t!(
+                                "Sağdaki 'Ayarlar' düğmesinden övgü/eleştiri eşiklerini değiştirebilir veya 'Turu Sıfırla' ile yeni görüşme turu başlatabilirsiniz.",
+                                "Use the 'Settings' button on the right to adjust praise/criticism cutoffs, or 'Reset Batch' to start a new round."
+                            )));
+                            ui.add_space(28.0);
+                        });
+                    } else {
+                        let mid = (actionable_rows.len() + 1) / 2;
+                        let (col_left, col_right) = actionable_rows.split_at(mid);
+                        ui.columns(2, |cols| {
+                            self.render_easy_talk_table_col(&mut cols[0], ctx, "et_col_l", col_left, green_praise, red_crit);
+                            self.render_easy_talk_table_col(&mut cols[1], ctx, "et_col_r", col_right, green_praise, red_crit);
+                        });
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.vertical(|ui| {
+                            let min_s = (actionable_total / 7).max(2);
+                            let max_s = (actionable_total / 2).max(5);
+                            ui.label(theme::faint(t!(
+                                format!("{min_s} ile {max_s} sn sürer."),
+                                format!("Takes {min_s} to {max_s} s.")
+                            )));
+                            ui.label(theme::faint(t!(
+                                "Bir satırı bu turun dışında bırakmak için adına tıklayın · gelişimi görmek için üzerine gelin · değiştirmek için konuşmaya tıklayın",
+                                "Click a name to leave it out of this batch · hover to see development · click the talk badge to switch it"
+                            )));
+                        });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Pembe "23 görüşmeyi onayla >>" düğmesi
+                            let btn_lbl = t!(
+                                format!("{} görüşmeyi onayla  »", actionable_total),
+                                format!("Confirm {} talks  »", actionable_total)
+                            );
+                            let confirm_btn = egui::Button::new(
+                                RichText::new(btn_lbl)
+                                    .font(egui::FontId::new(14.0, theme::bold()))
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(if actionable_total > 0 && !busy {
+                                pink_confirm
+                            } else {
+                                theme::SURFACE2
+                            })
+                            .corner_radius(CornerRadius::same(18))
+                            .min_size(vec2(195.0, 36.0));
+
+                            if ui
+                                .add_enabled(actionable_total > 0 && !busy, confirm_btn)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                let mut summary = Vec::new();
+                                for ev in &actionable_rows {
+                                    if !self.live.easy_talks_left_out.contains(&ev.uid) {
+                                        self.live.easy_talks_talked.insert(ev.uid);
+                                        summary.push((
+                                            ev.name.clone(),
+                                            ev.team_name.clone(),
+                                            ev.kind.label(),
+                                            ev.reaction_label,
+                                        ));
+                                    }
+                                }
+                                self.live.easy_talks_last_summary = summary;
+                                action = Some((
+                                    t!("Easy Talk görüşmeleri", "Easy Talk conversations").into(),
+                                    json!({
+                                        "cmd": "apply_easy_talks",
+                                        "praise_uids": batch_praise_uids,
+                                        "criticise_uids": batch_crit_uids,
+                                    }),
+                                ));
+                            }
+
+                            if (!self.live.easy_talks_talked.is_empty()
+                                || !self.live.easy_talks_left_out.is_empty()
+                                || !self.live.easy_talks_override.is_empty())
+                                && theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Turu Sıfırla", "Reset Batch"), !busy).clicked()
+                            {
+                                self.live.easy_talks_talked.clear();
+                                self.live.easy_talks_left_out.clear();
+                                self.live.easy_talks_override.clear();
+                            }
+                        });
+                    });
+                });
+            });
+
+            ui.add_space(12.0);
+
+            // SAĞ PANEL: KADRO, GEÇERLİ EŞİKLER, ZATEN KONUŞULDU, GÖRÜŞME YOK
+            ui.vertical(|ui| {
+                ui.set_width(right_w);
+                ui.set_max_width(right_w);
+
+                // 1. KADRO Kartı
+                theme::card(ui, |ui| {
+                    ui.label(theme::caps(t!("KADRO", "SQUAD")));
+                    ui.add_space(6.0);
+                    for tm in &et_data.teams {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&tm.name).color(theme::TEXT));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(t!(
+                                        format!("{} oyuncudan {}", tm.total_players, tm.available_players),
+                                        format!("{} of {} players", tm.available_players, tm.total_players)
+                                    ))
+                                    .strong()
+                                    .color(theme::TEXT),
+                                );
+                            });
+                        });
+                        let mut sub_parts = Vec::new();
+                        if tm.loaned_players > 0 {
+                            sub_parts.push(t!(format!("Kiralık: {}", tm.loaned_players), format!("On loan: {}", tm.loaned_players)));
+                        }
+                        if tm.injured_players > 0 {
+                            sub_parts.push(t!(format!("Sakat: {}", tm.injured_players), format!("Injured: {}", tm.injured_players)));
+                        }
+                        if !sub_parts.is_empty() {
+                            ui.label(theme::faint(sub_parts.join(" · ")));
+                        }
+                        ui.add_space(4.0);
+                    }
+                    ui.add_space(2.0);
+                    ui.add(
+                        egui::Label::new(theme::faint(t!(
+                            "Kiralık ve sakat oyuncular antrenman yapmaz: onlarla görüşme yok.",
+                            "Players on loan or injured do not train: no talk for them."
+                        )))
+                        .wrap(),
+                    );
+                });
+                ui.add_space(10.0);
+
+                // 2. GEÇERLİ EŞİKLER Kartı
+                theme::card(ui, |ui| {
+                    ui.label(theme::caps(t!("GEÇERLİ EŞİKLER", "CURRENT CUTOFFS")));
+                    ui.add_space(6.0);
+                    let mc = &self.settings.easy_talk.main_cutoffs;
+                    ui.horizontal(|ui| {
+                        ui.label(theme::dim(t!("Puana göre öv", "Praise rating")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if mc.rating_talks {
+                                theme::pill(
+                                    ui,
+                                    &t!(format!("{:.2} ve üzeri", mc.praise_from), format!("from {:.2}", mc.praise_from)),
+                                    green_praise,
+                                );
+                            } else {
+                                theme::pill(ui, t!("kapalı", "off"), theme::TEXT_FAINT);
+                            }
+                        });
+                    });
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(theme::dim(t!("Puana göre eleştir", "Criticise rating")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if mc.rating_talks {
+                                theme::pill(
+                                    ui,
+                                    &t!(format!("{:.2} ve altı", mc.criticise_up_to), format!("up to {:.2}", mc.criticise_up_to)),
+                                    red_crit,
+                                );
+                            } else {
+                                theme::pill(ui, t!("kapalı", "off"), theme::TEXT_FAINT);
+                            }
+                        });
+                    });
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(theme::dim(t!("Gelişimi öv", "Praise development")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if mc.development_talks && mc.rises_for_praise > 0 {
+                                theme::pill(
+                                    ui,
+                                    &t!(format!("{}+ yükselen", mc.rises_for_praise), format!("{}+ rising", mc.rises_for_praise)),
+                                    green_praise,
+                                );
+                            } else {
+                                theme::pill(ui, t!("kapalı", "off"), theme::TEXT_FAINT);
+                            }
+                        });
+                    });
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(theme::dim(t!("Gelişimi eleştir", "Criticise development")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if mc.development_talks && mc.falls_for_criticism > 0 {
+                                theme::pill(
+                                    ui,
+                                    &t!(format!("{}+ düşen", mc.falls_for_criticism), format!("{}+ falling", mc.falls_for_criticism)),
+                                    red_crit,
+                                );
+                            } else {
+                                theme::pill(ui, t!("kapalı", "off"), theme::TEXT_FAINT);
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    if ui
+                        .add_sized(
+                            vec2(ui.available_width(), 30.0),
+                            egui::Button::new(RichText::new(t!("... Ayarlar", "... Settings")).color(theme::TEXT))
+                                .fill(theme::SURFACE2)
+                                .corner_radius(CornerRadius::same(8)),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.easy_talk_settings_open = true;
+                    }
+                });
+                ui.add_space(10.0);
+
+                // 3. ZATEN KONUŞULDU Kartı
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::caps(t!("ZATEN KONUŞULDU", "ALREADY TALKED")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(talked_rows.len().to_string()).strong().color(theme::TEXT));
+                        });
+                    });
+                    ui.add_space(6.0);
+                    if talked_rows.is_empty() {
+                        ui.label(theme::faint(t!("Henüz kimseyle konuşulmadı.", "Nobody talked to yet.")));
+                    } else {
+                        for tr in talked_rows.iter().take(4) {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                self.draw_player_avatar(ui, ctx, tr.uid, 20.0);
+                                ui.add(egui::Label::new(RichText::new(&tr.name).size(12.0).color(theme::TEXT)).truncate());
+                                ui.add(egui::Label::new(theme::faint(&tr.pos_short)).truncate());
+                            });
+                            ui.add_space(2.0);
+                        }
+                        if talked_rows.len() > 4 {
+                            ui.label(theme::faint(t!(
+                                format!("ve {} kişi daha", talked_rows.len() - 4),
+                                format!("and {} more", talked_rows.len() - 4)
+                            )));
+                        }
+                    }
+                    if !self.live.easy_talks_last_summary.is_empty() {
+                        ui.add_space(6.0);
+                        if ui
+                            .add_sized(
+                                vec2(ui.available_width(), 28.0),
+                                egui::Button::new(
+                                    RichText::new(if self.easy_talk_show_summary {
+                                        t!("Özeti gizle", "Hide summary")
+                                    } else {
+                                        t!("Son özeti gör", "See the last summary")
+                                    })
+                                    .color(theme::TEXT),
+                                )
+                                .fill(theme::SURFACE2)
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.easy_talk_show_summary = !self.easy_talk_show_summary;
+                        }
+                        if self.easy_talk_show_summary {
+                            ui.add_space(6.0);
+                            for (pname, tname, klabel, rlabel) in self.live.easy_talks_last_summary.iter().take(12) {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(pname).size(12.0).strong().color(theme::TEXT));
+                                    ui.label(theme::faint(format!("({tname}) · {klabel} →")));
+                                    ui.label(RichText::new(*rlabel).size(12.0).color(green_praise));
+                                });
+                            }
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+
+                // 4. GÖRÜŞME YOK Kartı
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::caps(t!("GÖRÜŞME YOK", "NO TALK")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(cnt_no_talk.to_string()).strong().color(theme::TEXT));
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Label::new(theme::faint(t!(
+                            "Mevcut ayarlarla uygun görüşme yok (eşikler arasında kalan veya sakat/kiralık oyuncular).",
+                            "No talk applies with the current settings (players between cutoffs or injured/on loan)."
+                        )))
+                        .wrap(),
+                    );
+                });
+            });
+        });
+
+        if let Some((l, r)) = action {
+            self.live.refresh(ctx, &l, Some(r));
+        }
+    }
+
+    fn draw_player_avatar(&mut self, ui: &mut Ui, ctx: &egui::Context, uid: u32, size: f32) {
+        if !self.face_textures.contains_key(&uid) {
+            let loaded = (|| -> Option<egui::TextureHandle> {
+                if self.settings.faces_dir.trim().is_empty() {
+                    return None;
+                }
+                let dir = PathBuf::from(self.settings.faces_dir.trim());
+                if !dir.is_dir() {
+                    return None;
+                }
+                let candidates = [
+                    dir.join(format!("face_{uid}.png")),
+                    dir.join(format!("{uid}.png")),
+                    dir.join(format!("face_{uid} (1).png")),
+                    dir.join(format!("{uid} (1).png")),
+                ];
+                let path = candidates.into_iter().find(|p| p.is_file())?;
+                let img = image::open(&path).ok()?.into_rgba8();
+                let (w, h) = img.dimensions();
+                let color_img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+                Some(ctx.load_texture(format!("face_{uid}"), color_img, egui::TextureOptions::LINEAR))
+            })();
+            self.face_textures.insert(uid, loaded);
+        }
+
+        let (rect, _) = ui.allocate_exact_size(vec2(size, size), egui::Sense::hover());
+        if let Some(Some(tex)) = self.face_textures.get(&uid) {
+            ui.painter().rect_filled(rect, CornerRadius::same(5), Color32::from_rgb(20, 23, 30));
+            egui::Image::from_texture(tex)
+                .corner_radius(CornerRadius::same(5))
+                .paint_at(ui, rect);
+        } else {
+            theme::paint_silhouette_avatar(ui.painter(), rect);
+        }
+    }
+
+    fn render_easy_talk_table_col(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &egui::Context,
+        grid_id: &str,
+        rows: &[crate::tactics::EasyTalkEvaluation],
+        green_praise: Color32,
+        red_crit: Color32,
+    ) {
+        let col_w = ui.available_width();
+        let name_col_w = (col_w - 235.0).max(125.0);
+        let team_col_w = 56.0f32;
+
+        egui::Grid::new(grid_id)
+            .num_columns(5)
+            .spacing([8.0, 6.0])
+            .min_col_width(24.0)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label(theme::caps(t!("AD", "NAME")));
+                ui.label(theme::caps(t!("TAKIM", "TEAM")));
+                ui.label(theme::caps(t!("GÖRÜŞME", "TALK")));
+                ui.label(theme::caps(t!("GEL.", "DEV.")));
+                ui.label(theme::caps(t!("PUAN", "RATING")));
+                ui.end_row();
+
+                for ev in rows {
+                    let left_out = self.live.easy_talks_left_out.contains(&ev.uid);
+                    let name_col = if left_out { theme::TEXT_FAINT } else { theme::TEXT };
+
+                    let hover_txt = {
+                        let mut lines = Vec::new();
+                        if !ev.rising_names.is_empty() {
+                            lines.push(format!(
+                                "{} ({}): {}",
+                                t!("Yükselen", "Rising"),
+                                ev.rising,
+                                ev.rising_names.join(", ")
+                            ));
+                        }
+                        if !ev.falling_names.is_empty() {
+                            lines.push(format!(
+                                "{} ({}): {}",
+                                t!("Düşen", "Falling"),
+                                ev.falling,
+                                ev.falling_names.join(", ")
+                            ));
+                        }
+                        if lines.is_empty() {
+                            t!("Antrenman raporunda belirgin özellik değişimi yok.", "No attribute changes in training report.").to_string()
+                        } else {
+                            lines.join("\n")
+                        }
+                    };
+
+                    // 1. AD (Yüz + Tek Satır İsim + Tek Satır Mevki)
+                    ui.horizontal(|ui| {
+                        ui.set_min_width(name_col_w);
+                        ui.set_max_width(name_col_w);
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        self.draw_player_avatar(ui, ctx, ev.uid, 30.0);
+                        let text_w = (name_col_w - 38.0).max(80.0);
+                        ui.vertical(|ui| {
+                            ui.set_min_width(text_w);
+                            ui.set_max_width(text_w);
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            let mut name_rt = RichText::new(&ev.name).size(13.0).strong().color(name_col);
+                            if left_out {
+                                name_rt = name_rt.strikethrough();
+                            }
+                            if ui
+                                .add(egui::Label::new(name_rt).truncate().sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(&hover_txt)
+                                .clicked()
+                            {
+                                if left_out {
+                                    self.live.easy_talks_left_out.remove(&ev.uid);
+                                } else {
+                                    self.live.easy_talks_left_out.insert(ev.uid);
+                                }
+                            }
+                            ui.add(
+                                egui::Label::new(RichText::new(&ev.pos_short).size(10.5).color(theme::TEXT_FAINT))
+                                    .truncate(),
+                            );
+                        });
+                    });
+
+                    // 2. TAKIM (Tek satır, taşmadan)
+                    ui.scope(|ui| {
+                        ui.set_min_width(team_col_w);
+                        ui.set_max_width(team_col_w);
+                        ui.add(
+                            egui::Label::new(RichText::new(&ev.team_name).size(12.0).color(theme::TEXT_DIM))
+                                .truncate(),
+                        )
+                        .on_hover_text(&ev.team_name);
+                    });
+
+                    // 3. GÖRÜŞME (Sabit 22px yükseklikli dolgu hapı)
+                    let badge_col = if left_out {
+                        theme::TEXT_FAINT
+                    } else if ev.kind.is_praise() {
+                        green_praise
+                    } else {
+                        red_crit
+                    };
+                    let badge_lbl = if left_out {
+                        t!("dışarıda", "left out")
+                    } else {
+                        ev.kind.label()
+                    };
+                    if theme::clickable_pill(ui, badge_lbl, badge_col, !left_out)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(&hover_txt)
+                        .clicked()
+                    {
+                        if left_out {
+                            self.live.easy_talks_left_out.remove(&ev.uid);
+                        } else {
+                            self.live.easy_talks_override.insert(ev.uid, ev.kind.toggle_action());
+                        }
+                    }
+
+                    // 4. GEL. (+22 / -13)
+                    if ev.net_dev > 0 {
+                        ui.label(RichText::new(format!("+{}", ev.net_dev)).size(12.5).strong().color(green_praise))
+                            .on_hover_text(&hover_txt);
+                    } else if ev.net_dev < 0 {
+                        ui.label(RichText::new(format!("{}", ev.net_dev)).size(12.5).strong().color(red_crit))
+                            .on_hover_text(&hover_txt);
+                    } else {
+                        ui.label(theme::faint(""));
+                    }
+
+                    // 5. PUAN (Sabit 22px yükseklikli dikdörtgen rozet)
+                    let r_col = if ev.rating >= 7.50 {
+                        green_praise
+                    } else if ev.rating <= 6.50 {
+                        red_crit
+                    } else {
+                        Color32::from_rgb(88, 96, 114)
+                    };
+                    let r_str = if i18n::is_tr() {
+                        format!("{:.2}", ev.rating).replace('.', ",")
+                    } else {
+                        format!("{:.2}", ev.rating)
+                    };
+                    theme::rating_badge(ui, &r_str, r_col);
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn render_easy_talk_settings(
+        &mut self,
+        ui: &mut Ui,
+        et_data: &crate::tactics::EasyTalkData,
+        evals: &[crate::tactics::EasyTalkEvaluation],
+        green_praise: Color32,
+        red_crit: Color32,
+        pink_confirm: Color32,
+        gray_between: Color32,
+    ) {
+        let mut dirty = false;
+
+        theme::card(ui, |ui| {
+            ui.label(theme::caps(t!("TAKIMLAR", "TEAMS")));
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                let all_enabled = self.settings.easy_talk.disabled_teams.is_empty();
+                let all_avail: usize = et_data.teams.iter().map(|t| t.available_players).sum();
+                let all_lbl = t!(format!("✓ Tümü {all_avail}"), format!("✓ All {all_avail}"));
+                if theme::clickable_pill(ui, &all_lbl, if all_enabled { theme::INFO } else { theme::TEXT_FAINT }, false)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    if all_enabled {
+                        self.settings.easy_talk.disabled_teams = et_data.teams.iter().map(|t| t.index).collect();
+                    } else {
+                        self.settings.easy_talk.disabled_teams.clear();
+                    }
+                    dirty = true;
+                }
+                for tm in &et_data.teams {
+                    let enabled = !self.settings.easy_talk.disabled_teams.contains(&tm.index);
+                    let mark = if enabled { "✓ " } else { "" };
+                    let lbl = format!("{mark}{} {}", tm.name, tm.available_players);
+                    if theme::clickable_pill(ui, &lbl, if enabled { theme::INFO } else { theme::TEXT_FAINT }, false)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        if enabled {
+                            self.settings.easy_talk.disabled_teams.push(tm.index);
+                        } else {
+                            self.settings.easy_talk.disabled_teams.retain(|&x| x != tm.index);
+                        }
+                        dirty = true;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(theme::faint(t!(
+                "Görüşmelere dahil olan kulüp takımları.",
+                "The club teams the talks go to."
+            )));
+        });
+        ui.add_space(12.0);
+
+        if !et_data.teams.iter().any(|t| t.index == self.easy_talk_cutoff_team) {
+            self.easy_talk_cutoff_team = et_data.teams.first().map(|t| t.index).unwrap_or(0);
+        }
+        let cur_team_idx = self.easy_talk_cutoff_team;
+        let is_first_team = cur_team_idx == et_data.teams.first().map(|t| t.index).unwrap_or(0);
+
+        let active_cut = self.settings.easy_talk.cutoffs_for(cur_team_idx).clone();
+        let team_evals: Vec<&crate::tactics::EasyTalkEvaluation> = evals
+            .iter()
+            .filter(|e| e.team_index == cur_team_idx)
+            .collect();
+        let talks_with_cutoffs = team_evals.iter().filter(|e| e.kind.is_actionable()).count();
+        let in_crit_band = team_evals.iter().filter(|e| e.rating <= active_cut.criticise_up_to).count();
+        let in_praise_band = team_evals.iter().filter(|e| e.rating >= active_cut.praise_from).count();
+        let in_between = team_evals.len().saturating_sub(in_crit_band + in_praise_band);
+
+        theme::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::caps(t!("EŞİKLER KADROYU NASIL BÖLÜYOR", "HOW THE CUTOFFS SPLIT THE SQUAD")));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(theme::dim(t!(
+                        format!("Bu eşiklerle: {talks_with_cutoffs} görüşme"),
+                        format!("With these cutoffs: {talks_with_cutoffs} talks")
+                    )));
+                });
+            });
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::dim(t!("Eşikler:", "Cutoffs:")));
+                for tm in &et_data.teams {
+                    let sel = tm.index == cur_team_idx;
+                    if theme::clickable_pill(ui, &tm.name, if sel { theme::INFO } else { theme::TEXT_FAINT }, sel)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.easy_talk_cutoff_team = tm.index;
+                    }
+                }
+                if !is_first_team {
+                    let has_custom = self.settings.easy_talk.by_team.contains_key(&cur_team_idx);
+                    if has_custom {
+                        if theme::small_button(ui, t!("A takımınkini kullan", "Use the first team's"), true).clicked() {
+                            self.settings.easy_talk.by_team.remove(&cur_team_idx);
+                            dirty = true;
+                        }
+                    } else {
+                        ui.label(theme::faint(t!("(A takımınkini kullanır)", "(uses the first team's)")));
+                    }
+                }
+            });
+            ui.add_space(12.0);
+
+            let plot_w = ui.available_width().max(200.0);
+            let plot_h = 64.0;
+            let (rect, _) = ui.allocate_exact_size(vec2(plot_w, plot_h), egui::Sense::hover());
+            let painter = ui.painter();
+            let min_r = 5.50f32;
+            let max_r = 9.50f32;
+            let x_of = |r: f32| -> f32 {
+                let t = ((r - min_r) / (max_r - min_r)).clamp(0.0, 1.0);
+                rect.left() + t * rect.width()
+            };
+            let bar_y = rect.bottom() - 18.0;
+            let x_crit = x_of(active_cut.criticise_up_to);
+            let x_praise = x_of(active_cut.praise_from);
+
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(rect.left(), bar_y), egui::pos2(x_crit, bar_y + 6.0)),
+                CornerRadius::same(2),
+                red_crit,
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x_crit, bar_y), egui::pos2(x_praise, bar_y + 6.0)),
+                CornerRadius::same(0),
+                Color32::from_rgb(76, 82, 96),
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x_praise, bar_y), egui::pos2(rect.right(), bar_y + 6.0)),
+                CornerRadius::same(2),
+                green_praise,
+            );
+
+            painter.vline(x_crit, (rect.top() + 4.0)..=bar_y, Stroke::new(1.0_f32, red_crit));
+            painter.vline(x_praise, (rect.top() + 4.0)..=bar_y, Stroke::new(1.0_f32, green_praise));
+
+            let mut buckets: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+            for ev in &team_evals {
+                let b = ((ev.rating.clamp(min_r, max_r) - min_r) / 0.10).round() as i32;
+                let stack = buckets.entry(b).or_insert(0);
+                let px = x_of(min_r + b as f32 * 0.10);
+                let py = bar_y - 7.0 - (*stack as f32 * 8.0);
+                if py >= rect.top() + 3.0 {
+                    let dot_col = if ev.rating <= active_cut.criticise_up_to {
+                        red_crit
+                    } else if ev.rating >= active_cut.praise_from {
+                        green_praise
+                    } else {
+                        gray_between
+                    };
+                    painter.circle_filled(egui::pos2(px, py), 3.2, dot_col);
+                }
+                *stack += 1;
+            }
+
+            let fmt_r = |v: f32| if i18n::is_tr() { format!("{v:.2}").replace('.', ",") } else { format!("{v:.2}") };
+            let font_sm = egui::FontId::new(11.5, theme::bold());
+            painter.text(egui::pos2(rect.left(), bar_y + 8.0), egui::Align2::LEFT_TOP, fmt_r(min_r), font_sm.clone(), theme::TEXT_FAINT);
+            painter.text(egui::pos2(x_crit, bar_y + 8.0), egui::Align2::CENTER_TOP, fmt_r(active_cut.criticise_up_to), font_sm.clone(), red_crit);
+            painter.text(egui::pos2(x_praise, bar_y + 8.0), egui::Align2::CENTER_TOP, fmt_r(active_cut.praise_from), font_sm.clone(), green_praise);
+            painter.text(egui::pos2(rect.right(), bar_y + 8.0), egui::Align2::RIGHT_TOP, fmt_r(max_r), font_sm, theme::TEXT_FAINT);
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 24.0;
+                for (col, cnt, lbl) in [
+                    (red_crit, in_crit_band, t!("Eleştiri bandında", "In the criticism band")),
+                    (gray_between, in_between, t!("Arada", "In between")),
+                    (green_praise, in_praise_band, t!("Övgü bandında", "In the praise band")),
+                ] {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            theme::status_dot(ui, col);
+                            ui.label(RichText::new(cnt.to_string()).size(16.0).strong().color(theme::TEXT));
+                        });
+                        ui.label(theme::faint(lbl));
+                    });
+                }
+            });
+        });
+        ui.add_space(12.0);
+
+        let mut edit_cut = active_cut.clone();
+        let mut cut_changed = false;
+
+        ui.columns(2, |cols| {
+            theme::card(&mut cols[0], |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::caps(t!("PUAN", "RATING")));
+                    ui.add_space(6.0);
+                    if theme::toggle(ui, &mut edit_cut.rating_talks).changed() {
+                        cut_changed = true;
+                    }
+                });
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    theme::pill(ui, "↑", green_praise);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t!("Övgü eşiği", "Praise from")).strong().color(theme::TEXT));
+                        ui.label(theme::faint(t!("ortalama antrenman puanı", "average training rating")));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::small_button(ui, "+", edit_cut.rating_talks && edit_cut.praise_from < 9.50).clicked() {
+                            edit_cut.praise_from = ((edit_cut.praise_from + 0.05) * 20.0).round() / 20.0;
+                            cut_changed = true;
+                        }
+                        let s = if i18n::is_tr() {
+                            format!("{:.2}", edit_cut.praise_from).replace('.', ",")
+                        } else {
+                            format!("{:.2}", edit_cut.praise_from)
+                        };
+                        ui.label(RichText::new(s).size(20.0).strong().color(theme::TEXT));
+                        if theme::small_button(ui, "-", edit_cut.rating_talks && edit_cut.praise_from > edit_cut.criticise_up_to + 0.10).clicked() {
+                            edit_cut.praise_from = ((edit_cut.praise_from - 0.05) * 20.0).round() / 20.0;
+                            cut_changed = true;
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    theme::pill(ui, "↓", red_crit);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t!("Eleştiri eşiği", "Criticise up to")).strong().color(theme::TEXT));
+                        ui.label(theme::faint(t!("ortalama antrenman puanı", "average training rating")));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::small_button(ui, "+", edit_cut.rating_talks && edit_cut.criticise_up_to + 0.10 < edit_cut.praise_from).clicked() {
+                            edit_cut.criticise_up_to = ((edit_cut.criticise_up_to + 0.05) * 20.0).round() / 20.0;
+                            cut_changed = true;
+                        }
+                        let s = if i18n::is_tr() {
+                            format!("{:.2}", edit_cut.criticise_up_to).replace('.', ",")
+                        } else {
+                            format!("{:.2}", edit_cut.criticise_up_to)
+                        };
+                        ui.label(RichText::new(s).size(20.0).strong().color(theme::TEXT));
+                        if theme::small_button(ui, "-", edit_cut.rating_talks && edit_cut.criticise_up_to > 5.50).clicked() {
+                            edit_cut.criticise_up_to = ((edit_cut.criticise_up_to - 0.05) * 20.0).round() / 20.0;
+                            cut_changed = true;
+                        }
+                    });
+                });
+            });
+
+            theme::card(&mut cols[1], |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::caps(t!("GELİŞİM", "DEVELOPMENT")));
+                    ui.add_space(6.0);
+                    if theme::toggle(ui, &mut edit_cut.development_talks).changed() {
+                        cut_changed = true;
+                    }
+                });
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    theme::pill(ui, "↑", green_praise);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t!("Övmek için en az", "Praise with at least")).strong().color(theme::TEXT));
+                        ui.label(theme::faint(t!("yükselen özellik", "rising attributes")));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::small_button(ui, "+", edit_cut.development_talks && edit_cut.rises_for_praise < 20).clicked() {
+                            edit_cut.rises_for_praise += 1;
+                            cut_changed = true;
+                        }
+                        ui.label(RichText::new(edit_cut.rises_for_praise.to_string()).size(20.0).strong().color(theme::TEXT));
+                        if theme::small_button(ui, "-", edit_cut.development_talks && edit_cut.rises_for_praise > 0).clicked() {
+                            edit_cut.rises_for_praise -= 1;
+                            cut_changed = true;
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    theme::pill(ui, "↓", red_crit);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t!("Eleştirmek için en az", "Criticise with at least")).strong().color(theme::TEXT));
+                        ui.label(theme::faint(t!("düşen özellik", "falling attributes")));
+                        ui.label(theme::faint(t!("0 = bu görüşme kapalı", "0 = this talk is off")));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::small_button(ui, "+", edit_cut.development_talks && edit_cut.falls_for_criticism < 20).clicked() {
+                            edit_cut.falls_for_criticism += 1;
+                            cut_changed = true;
+                        }
+                        ui.label(RichText::new(edit_cut.falls_for_criticism.to_string()).size(20.0).strong().color(theme::TEXT));
+                        if theme::small_button(ui, "-", edit_cut.development_talks && edit_cut.falls_for_criticism > 0).clicked() {
+                            edit_cut.falls_for_criticism -= 1;
+                            cut_changed = true;
+                        }
+                    });
+                });
+            });
+        });
+
+        if cut_changed {
+            if is_first_team {
+                self.settings.easy_talk.main_cutoffs = edit_cut;
+            } else {
+                self.settings.easy_talk.by_team.insert(cur_team_idx, edit_cut);
+            }
+            dirty = true;
+        }
+        if dirty {
+            self.save_settings();
+        }
+
+        ui.add_space(10.0);
+        ui.add(
+            egui::Label::new(theme::faint(t!(
+                "Gelişim, yükselen özellikler düşenlerden fazlaysa sayılır (eleştiride tersi). Puan ve gelişim ikisi de sayılırsa, kendi eşiğinden daha çok uzaklaşan kazanır. Eşikler arasında ya da puan konuşması kapalıyken gelişim karar verir: övgü veya eleştiri.",
+                "Development counts when more attributes rise than fall (the reverse for criticism). If both rating and development apply, whichever is further past its cutoff wins. Between the cutoffs or when rating talks are off, development decides: praise or criticism."
+            )))
+            .wrap(),
+        );
+        ui.add_space(12.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let save_btn = egui::Button::new(
+                RichText::new(t!("Kaydet  »", "Save  »"))
+                    .font(egui::FontId::new(14.0, theme::bold()))
+                    .color(Color32::WHITE),
+            )
+            .fill(pink_confirm)
+            .corner_radius(CornerRadius::same(18))
+            .min_size(vec2(130.0, 34.0));
+            if ui.add(save_btn).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.save_settings();
+                self.easy_talk_settings_open = false;
+            }
+            if theme::button(ui, "", t!("İptal", "Cancel"), true).clicked() {
+                self.easy_talk_settings_open = false;
+            }
+        });
+    }
+
     // -------------------------------------------------------------------- selectie
 
     fn page_squad(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -1477,15 +2954,11 @@ impl App {
             format!("{n} players · {injured} injured · {banned} suspended")
         );
         theme::page_header(ui, t!("Kadro", "Squad"), &subtitle, |ui| {
-            if theme::button(ui, icon::SMILEY, t!("Herkesin Moralini Maksimum Yap", "Max Everyone's Morale"), connected && !busy).clicked() {
-                action = Some((t!("moral", "morale").into(), json!({"cmd": "inspire", "morale": 20, "clear_unhappiness": true})));
+            if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Geri Al", "Undo"), connected && !busy).clicked() {
+                action = Some((t!("geri al", "undo").into(), json!({"cmd": "undo"})));
             }
-            if theme::button(ui, icon::WARNING, t!("Cezaları Kaldır", "Clear Suspensions"), connected && !busy && banned > 0).clicked() {
-                action = Some((t!("cezalar", "suspensions").into(), json!({"cmd": "lift_bans"})));
-            }
-            let heal = t!(format!("Herkesi İyileştir ({injured})"), format!("Heal Everyone ({injured})"));
-            if theme::primary_button(ui, icon::FIRST_AID, &heal, connected && !busy && injured > 0).clicked() {
-                action = Some((t!("iyileştirme", "heal").into(), json!({"cmd": "heal"})));
+            if busy {
+                ui.spinner();
             }
         });
         let (m, e) = (self.live.status.clone(), self.live.status_error);
@@ -1494,6 +2967,34 @@ impl App {
             self.connect_card(ui, ctx);
             return;
         }
+        theme::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let heal_lbl = if injured > 0 {
+                    t!(format!("Herkesi İyileştir ({injured})"), format!("Heal Everyone ({injured})"))
+                } else {
+                    t!("Herkesi İyileştir".to_string(), "Heal Everyone".to_string())
+                };
+                if theme::primary_button(ui, icon::FIRST_AID, &heal_lbl, connected && !busy).clicked() {
+                    action = Some((t!("iyileştirme", "heal").into(), json!({"cmd": "heal"})));
+                }
+                let ban_lbl = if banned > 0 {
+                    t!(format!("Cezaları Kaldır ({banned})"), format!("Clear Suspensions ({banned})"))
+                } else {
+                    t!("Cezaları Kaldır".to_string(), "Clear Suspensions".to_string())
+                };
+                if theme::primary_button(ui, icon::WARNING, &ban_lbl, connected && !busy).clicked() {
+                    action = Some((t!("cezalar", "suspensions").into(), json!({"cmd": "lift_bans"})));
+                }
+                if theme::primary_button(ui, icon::SMILEY, t!("Herkesin Moralini Maksimum Yap", "Max Everyone's Morale"), connected && !busy).clicked() {
+                    action = Some((t!("moral", "morale").into(), json!({"cmd": "inspire", "morale": 20, "clear_unhappiness": true})));
+                }
+                if theme::primary_button(ui, icon::BRAIN, t!("Taktik Anlayışını Maksimum Yap", "Maximise Tactical Understanding"), connected && !busy).clicked() {
+                    action = Some((t!("taktik anlayışı", "tactical understanding").into(), json!({"cmd": "max_understanding"})));
+                }
+            });
+        });
+        ui.add_space(12.0);
         let tu = self.live.understanding.clone();
         let tu_players: std::collections::HashMap<u64, f32> = tu
             .as_ref()
@@ -1510,23 +3011,14 @@ impl App {
             })
             .unwrap_or_default();
         theme::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(theme::h2(t!("Taktik Anlayışı", "Tactical Understanding")));
-                    ui.add(
-                        egui::Label::new(theme::faint(t!(
-                            "Kadronun mevcut taktiğinizi alan bazında ne kadar iyi bildiği (oyuncuların ortalaması). Maksimuma çıkarma işlemi FM oyun içi editörünün yaptığını yapar: her şeyi %100'e çıkarır.",
-                            "How well the squad knows your current tactic per area (player average). Maximising does what FM's in-game editor does: sets everything to 100%."
-                        )))
-                        .wrap(),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if theme::primary_button(ui, icon::BRAIN, t!("Taktik Anlayışını Maksimum Yap", "Maximise Tactical Understanding"), connected && !busy).clicked() {
-                        action = Some((t!("taktik anlayışı", "tactical understanding").into(), json!({"cmd": "max_understanding"})));
-                    }
-                });
-            });
+            ui.label(theme::h2(t!("Taktik Anlayışı", "Tactical Understanding")));
+            ui.add(
+                egui::Label::new(theme::faint(t!(
+                    "Kadronun mevcut taktiğinizi alan bazında ne kadar iyi bildiği (oyuncuların ortalaması). Maksimuma çıkarma işlemi FM oyun içi editörünün yaptığını yapar: her şeyi %100'e çıkarır.",
+                    "How well the squad knows your current tactic per area (player average). Maximising does what FM's in-game editor does: sets everything to 100%."
+                )))
+                .wrap(),
+            );
             match tu.as_ref().and_then(|u| u.get("team")).and_then(|v| v.as_array()) {
                 Some(team) if !team.is_empty() => {
                     ui.add_space(6.0);
@@ -1580,10 +3072,16 @@ impl App {
                     ui.label(theme::caps(h));
                 }
                 ui.end_row();
-                for p in &self.live.squad {
+                let squad_rows = self.live.squad.clone();
+                for p in &squad_rows {
                     let uid = p.get("uid").and_then(|v| v.as_u64()).unwrap_or(0);
                     let m = p.get("morale").and_then(|v| v.as_u64()).unwrap_or(0);
-                    ui.label(theme::label_strong(p.get("name").and_then(|v| v.as_str()).unwrap_or("?")));
+                    let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        self.draw_player_avatar(ui, ctx, uid as u32, 26.0);
+                        ui.label(theme::label_strong(pname));
+                    });
                     theme::pill(ui, &format!("{m} · {}", morale_label(m)), theme::rgb(level_color((m as f32 - 1.0) / 19.0 * 100.0)));
                     let cond = p.get("condition").and_then(|v| v.as_u64()).unwrap_or(0) as f32 / 100.0;
                     ui.scope(|ui| {
@@ -1823,6 +3321,8 @@ impl App {
                             let f = tx::fit(p, pl);
                             let r = tx::position_rating(p, pl);
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 7.0;
+                                self.draw_player_avatar(ui, ctx, p.uid, 26.0);
                                 ui.label(theme::label_strong(&p.name));
                                 if p.injured {
                                     theme::pill(ui, t!("sakat", "injured"), theme::DANGER);
@@ -1848,7 +3348,11 @@ impl App {
                                 .max_by(|a, b| a.1.total_cmp(&b.1));
                             match alt {
                                 Some((q, qf)) if qf >= f + 2.0 => {
-                                    ui.label(RichText::new(format!("{} (+{:.0})", q.name, qf - f)).color(theme::SUCCESS));
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        self.draw_player_avatar(ui, ctx, q.uid, 22.0);
+                                        ui.label(RichText::new(format!("{} (+{:.0})", q.name, qf - f)).color(theme::SUCCESS));
+                                    });
                                 }
                                 _ => {
                                     ui.label(theme::faint("—"));
@@ -1889,12 +3393,19 @@ impl App {
                     changes += 1;
                     let now = pl.uid.and_then(|u| by_uid.get(&u));
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
                         ui.scope(|ui| {
                             ui.set_width(90.0);
                             ui.label(theme::label_strong(pl.line.label(pl.side)));
                         });
-                        ui.label(theme::dim(now.map(|p| p.name.as_str()).unwrap_or(t!("boş", "empty"))));
+                        if let Some(np) = now {
+                            self.draw_player_avatar(ui, ctx, np.uid, 22.0);
+                            ui.label(theme::dim(&np.name));
+                        } else {
+                            ui.label(theme::dim(t!("boş", "empty")));
+                        }
                         ui.label(theme::ic(icon::ARROW_RIGHT).color(theme::TEXT_FAINT));
+                        self.draw_player_avatar(ui, ctx, b.uid, 22.0);
                         ui.label(theme::label_strong(&b.name));
                         let (bf, nf) = (tx::fit(b, pl), now.map(|p| tx::fit(p, pl)));
                         theme::pill(ui, &match nf { Some(nf) => format!("{nf:.0} → {bf:.0}"), None => format!("{bf:.0}") }, theme::rgb(level_color(bf)));
@@ -1913,13 +3424,13 @@ impl App {
         });
 
         // een rol die beter bij de speler past
-        let role_tips: Vec<(String, &'static str, &'static str, &'static str, f32, f32)> = order
+        let role_tips: Vec<(u32, String, &'static str, &'static str, &'static str, f32, f32)> = order
             .iter()
             .filter_map(|&i| {
                 let pl = &places[i];
                 let p = pl.uid.and_then(|u| by_uid.get(&u))?;
                 let (r, now, then) = tx::better_role(p, pl)?;
-                Some((p.name.clone(), tx::ip_role(pl.ip?)?.code_str(), r.code_str(), r.name_str(), now, then))
+                Some((p.uid, p.name.clone(), tx::ip_role(pl.ip?)?.code_str(), r.code_str(), r.name_str(), now, then))
             })
             .collect();
         theme::card(ui, |ui| {
@@ -1935,8 +3446,10 @@ impl App {
             if role_tips.is_empty() {
                 ui.label(theme::dim(t!("Yok: her oyuncu kendisine uygun bir rolde oynuyor.", "None: every player is in a well-suited role.")));
             }
-            for (name, cur, code, full, now, then) in &role_tips {
+            for (puid, name, cur, code, full, now, then) in &role_tips {
                 ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    self.draw_player_avatar(ui, ctx, *puid, 22.0);
                     ui.label(theme::label_strong(name));
                     theme::pill(ui, &format!("{cur} {now:.0}"), theme::TEXT_DIM);
                     ui.label(theme::ic(icon::ARROW_RIGHT).color(theme::TEXT_FAINT));
@@ -1981,6 +3494,53 @@ impl App {
                         t!("Okumadan önce FM penceresini öne getir", "Bring FM window to front before reading"),
                     )
                     .changed();
+                ui.add_space(10.0);
+                ui.label(RichText::new(t!("FM27 Graphics Klasörü (Logolar, Formalar, Yüzler):", "FM27 Graphics Folder (Logos, Kits, Faces):")).color(theme::TEXT));
+                ui.add_space(3.0);
+                ui.horizontal(|ui| {
+                    let avail = (ui.available_width() - 80.0).max(120.0);
+                    if ui
+                        .add_sized(
+                            vec2(avail, 26.0),
+                            egui::TextEdit::singleline(&mut self.settings.graphics_dir),
+                        )
+                        .changed()
+                    {
+                        self.club_logo_textures.clear();
+                        dirty = true;
+                    }
+                    if theme::small_button(ui, t!("Yenile", "Reload"), true).clicked() {
+                        self.club_logo_textures.clear();
+                        self.face_textures.clear();
+                    }
+                });
+                ui.label(theme::faint(t!(
+                    "FM'ye bağlı kulübün logosunu ve ileriki grafik paketlerini (graphics) bu klasörden otomatik yükler.",
+                    "Automatically loads the connected club's logo and graphics packs from this folder."
+                )));
+                ui.add_space(8.0);
+                ui.label(RichText::new(t!("Oyuncu Yüzleri Klasörü (Faces):", "Player Faces Folder:")).color(theme::TEXT));
+                ui.add_space(3.0);
+                ui.horizontal(|ui| {
+                    let avail = (ui.available_width() - 80.0).max(120.0);
+                    if ui
+                        .add_sized(
+                            vec2(avail, 26.0),
+                            egui::TextEdit::singleline(&mut self.settings.faces_dir),
+                        )
+                        .changed()
+                    {
+                        self.face_textures.clear();
+                        dirty = true;
+                    }
+                    if theme::small_button(ui, t!("Yüzleri Yenile", "Reload Faces"), true).clicked() {
+                        self.face_textures.clear();
+                    }
+                });
+                ui.label(theme::faint(t!(
+                    "Easy Talk, Kadro ve Taktik ekranlarında oyuncu adlarının yanında yüz paketini (face_<uid>.png) gösterir.",
+                    "Displays player portraits (face_<uid>.png) next to names in Easy Talk, Squad and Tactics."
+                )));
             });
             theme::card(&mut cols[1], |ui| {
                 ui.label(theme::h2(t!("Planlayıcı & Taktik Antrenmanı", "Planner & Tactical Training")));
@@ -2188,24 +3748,37 @@ impl App {
                     ui,
                     icon::ARROW_CLOCKWISE,
                     t!("Güncellemeleri Kontrol Et", "Check for Updates"),
-                    self.update_rx.is_none(),
+                    self.update_rx.is_none() && !self.self_updating,
                 )
                 .clicked()
                 {
+                    self.dismissed_release_tag = None;
                     self.update_status = t!("GitHub kontrol ediliyor…", "Checking GitHub…").into();
                     self.update_rx = Some(spawn_update_check());
                 }
-                if let Some((tag, url)) = self.latest_release.clone() {
+                if let Some(rel) = self.latest_release.clone() {
                     ui.add_space(6.0);
+                    let lbl = if self.self_updating {
+                        t!("Güncelleniyor…", "Updating…").to_string()
+                    } else {
+                        t!(format!("Yeni sürüm ({}) · Şimdi Güncelle", rel.tag), format!("New Version ({}) · Update Now", rel.tag))
+                    };
                     if theme::primary_button(
                         ui,
                         icon::ARROW_CLOCKWISE,
-                        &t!(format!("Yeni sürüm ({tag}) İndir"), format!("Download New Version ({tag})")),
-                        true,
+                        &lbl,
+                        !self.self_updating,
                     )
                     .clicked()
                     {
-                        open_url(&url);
+                        self.dismissed_release_tag = None;
+                        if let Some(exe) = rel.exe_url {
+                            self.self_updating = true;
+                            self.update_status = t!("Yeni sürüm indiriliyor ve kuruluyor…", "Downloading and installing new version…").into();
+                            self.self_update_rx = Some(spawn_self_update(exe));
+                        } else {
+                            open_url(&rel.html_url);
+                        }
                     }
                 }
             });
@@ -2216,12 +3789,29 @@ impl App {
         });
         ui.add_space(14.0);
         theme::card(ui, |ui| {
-            ui.label(theme::h2(t!("Hakkında", "About")));
+            ui.label(theme::h2(t!("Hakkında & Teşekkürler", "About & Credits")));
             ui.add(egui::Label::new(theme::dim(t!(
                 "Seans adları, limitler ve şablonlar FM27'nin kendi oyun verilerinden alınmıştır. Modül yalnızca kontrolden sonra okur ve yazar, geri alma (undo) desteklidir. Yalnızca tek oyunculu (single-player) kullanım içindir. Yazı tipi: Inter (SIL OFL). İkonlar: Phosphor (MIT).",
                 "Session names, limits and templates come from FM27's own game data. The module only reads and writes after verification, with undo support. For single-player use only. Font: Inter (SIL OFL). Icons: Phosphor (MIT)."
             )))
             .wrap());
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::dim(t!(
+                    "Orijinal FM27 Trainer mimarisi ve temel proje:",
+                    "Original FM27 Trainer architecture & base project:"
+                )));
+                if ui
+                    .add(
+                        egui::Label::new(RichText::new("SemHiel2003 (github.com/SemHiel2003)").color(theme::ACCENT_HI))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    open_url("https://github.com/SemHiel2003");
+                }
+            });
         });
         if dirty {
             self.save_settings();
@@ -2229,13 +3819,110 @@ impl App {
             self.year.clear();
         }
     }
+
+    fn render_update_notice(&mut self, ui: &mut Ui) {
+        let Some(rel) = self.latest_release.clone() else { return };
+        if self.dismissed_release_tag.as_deref() == Some(rel.tag.as_str()) {
+            return;
+        }
+        let inner_w = (ui.available_width() - 28.0).max(200.0);
+        Frame::new()
+            .fill(theme::tint(theme::ACCENT, 0.14))
+            .stroke(Stroke::new(1.0_f32, theme::tint(theme::ACCENT_HI, 0.55)))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::symmetric(14, 12))
+            .show(ui, |ui| {
+                ui.set_width(inner_w);
+                ui.set_max_width(inner_w);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(theme::ic(icon::ARROW_CLOCKWISE).size(18.0).color(theme::ACCENT_HI));
+                    ui.label(
+                        RichText::new(t!(
+                            format!("Yeni Güncelleme Mevcut: {}", rel.tag),
+                            format!("New Update Available: {}", rel.tag)
+                        ))
+                        .size(14.5)
+                        .strong()
+                        .color(theme::TEXT),
+                    );
+                    theme::pill(
+                        ui,
+                        &t!(
+                            format!("Mevcut: v{}", env!("CARGO_PKG_VERSION")),
+                            format!("Current: v{}", env!("CARGO_PKG_VERSION"))
+                        ),
+                        theme::TEXT_DIM,
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::small_button(ui, t!("Gizle", "Dismiss"), !self.self_updating).clicked() {
+                            self.dismissed_release_tag = Some(rel.tag.clone());
+                        }
+                        if theme::small_button(ui, t!("GitHub'da Gör", "View on GitHub"), true).clicked() {
+                            open_url(&rel.html_url);
+                        }
+                        let btn_txt = if self.self_updating {
+                            t!("İndiriliyor ve Kuruluyor…", "Downloading & Installing…")
+                        } else if rel.exe_url.is_some() {
+                            t!("Şimdi Güncelle ve Yeniden Başlat", "Update Now & Restart")
+                        } else {
+                            t!("Yeni Sürümü İndir", "Download New Version")
+                        };
+                        if theme::primary_button(ui, icon::ARROW_CLOCKWISE, btn_txt, !self.self_updating).clicked() {
+                            if let Some(exe) = rel.exe_url.clone() {
+                                self.self_updating = true;
+                                self.update_status = t!(
+                                    "Yeni sürüm indiriliyor, tamamlandığında uygulama otomatik yeniden başlayacak…",
+                                    "Downloading new version, app will restart automatically when complete…"
+                                )
+                                .into();
+                                self.self_update_rx = Some(spawn_self_update(exe));
+                            } else {
+                                open_url(&rel.html_url);
+                            }
+                        }
+                        if self.self_updating {
+                            ui.spinner();
+                        }
+                    });
+                });
+
+                if !rel.notes.is_empty() {
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("update_notes_scroll")
+                        .max_height(95.0)
+                        .show(ui, |ui| {
+                            for line in rel.notes.lines().map(str::trim).filter(|l| !l.is_empty()).take(12) {
+                                let clean = line
+                                    .trim_start_matches('#')
+                                    .trim_start_matches('*')
+                                    .trim_start_matches('-')
+                                    .trim();
+                                if !clean.is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 5.0;
+                                        ui.label(RichText::new("•").size(12.0).color(theme::ACCENT_HI));
+                                        ui.label(RichText::new(clean).size(12.0).color(theme::TEXT_DIM));
+                                    });
+                                }
+                            }
+                        });
+                }
+                if self.self_updating && !self.update_status.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(&self.update_status).size(12.0).color(theme::ACCENT_HI));
+                }
+            });
+        ui.add_space(12.0);
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snapshot(ctx);
         self.poll_analysis(ctx);
-        self.poll_update();
+        self.poll_update(ctx);
         // automatisch uitlezen: niet tijdens handmatig aanpassen en nooit tijdens een testopname
         if self.settings.auto_read
             && !self.edit_mode
@@ -2268,9 +3955,11 @@ impl eframe::App for App {
                     let t = theme::enter(ctx, 0.22);
                     ui.set_opacity(0.25 + 0.75 * t);
                     ui.add_space(8.0 * (1.0 - t));
+                    self.render_update_notice(ui);
                     match self.page {
                         Page::Overview => self.page_overview(ui, ctx),
                         Page::Training => self.page_training(ui, ctx),
+                        Page::EasyTalk => self.page_easy_talk(ui, ctx),
                         Page::Planning => self.page_planning(ui),
                         Page::Squad => self.page_squad(ui, ctx),
                         Page::Tactics => self.page_tactics(ui, ctx),
@@ -2279,7 +3968,7 @@ impl eframe::App for App {
                     ui.add_space(20.0);
                 });
             });
-        if self.analysis_rx.is_some() || self.live.busy() {
+        if self.analysis_rx.is_some() || self.live.busy() || self.self_updating {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.settings.auto_read {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
