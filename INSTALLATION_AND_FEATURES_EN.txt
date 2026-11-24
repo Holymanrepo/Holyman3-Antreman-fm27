@@ -1,0 +1,58 @@
+===============================================================================
+  FM27 TRAINER v1.3.0 · by Holyman3
+  INSTALLATION & FEATURES GUIDE (ENGLISH)
+===============================================================================
+
+1. INSTALLATION OPTIONS
+-------------------------------------------------------------------------------
+• Option A (Recommended - Smart Setup Wizard):
+  Run "FM27.Trainer.Setup.exe".
+  - Choose your preferred language (English, Türkçe, Português) in the wizard.
+  - Your Windows user profile's "Documents\Sports Interactive\Football Manager 27\graphics"
+    folder is auto-detected. If your graphics pack is on another drive, click
+    "Browse..." to select it.
+  - Click "Install & Launch »" to install the app, create Desktop & Start Menu
+    shortcuts, and register an official Windows Installed Apps (Add/Remove
+    Programs) uninstaller entry.
+
+• Option B (Portable / No-Install Executable):
+  Simply double-click "FM27 Trainer.exe" to run immediately without installation.
+  All 3 language dictionaries (English, Türkçe, Português) are embedded directly
+  inside the executable.
+
+2. KEY FEATURES IN v1.3.0
+-------------------------------------------------------------------------------
+• Visual Pitch View & Real-Time Tactic Sync:
+  - On the "Tactics" tab, a striped football pitch displays your Starting XI
+    in their true pitch positions with player facepacks, role fit badges,
+    IP/OOP role codes, and condition bars.
+  - Switching between "Tactic 1 / Tactic 2 / Tactic 3" updates the active
+    tactic in FM27 memory while preserving player pitch positions.
+
+• Saved Starting XI Templates & "Apply Best XI to Game":
+  - Click "Apply Best XI to Game" to automatically assign your highest-fit 11
+    players into FM27's active tactic.
+  - Type a template name (e.g. "Main XI", "Cup XI", "Rotation") and click
+    "Save Current XI" to store up to 10 lineups and load them with one click.
+
+• Interactive Training Session Swap (2-Click Swap & Right-Click Menu):
+  - On "Training -> Upcoming Weeks", left-click any two training slots to swap
+    them, or RIGHT-CLICK any slot to pick a replacement session from the full
+    catalog and write it directly to FM27 memory.
+
+• Unified FM27 Graphics Folder (Player Faces & Club Logos):
+  - Automatically finds and loads both your connected club's crest in the
+    sidebar and player portraits across the Squad and Tactics tabs from a
+    single "graphics" folder.
+
+• Squad Readiness & Tactical Understanding (100% Lock):
+  - One-click top action bar on the Squad tab to Heal Everyone, Clear
+    Suspensions, Max Everyone's Morale, and Maximise Tactical Understanding.
+
+3. CONTACT & COMMUNITY
+-------------------------------------------------------------------------------
+• Discord : https://discord.gg/SYExYVpHP9
+• Kick    : https://kick.com/holyman3
+• Email   : holyymann3@gmail.com
+• GitHub  : https://github.com/Holymanrepo/Holyman3-Antreman-fm27
+===============================================================================
