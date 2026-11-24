@@ -1,0 +1,60 @@
+===============================================================================
+  FM27 TRAINER v1.3.0 · by Holyman3
+  GUIA DE INSTALAÇÃO E FUNCIONALIDADES (PORTUGUÊS)
+===============================================================================
+
+1. OPÇÕES DE INSTALAÇÃO
+-------------------------------------------------------------------------------
+• Opção A (Recomendado - Assistente de Instalação Inteligente):
+  Execute "FM27.Trainer.Setup.exe".
+  - Escolha o idioma da aplicação (Português, Türkçe, English) no instalador.
+  - A pasta "Documents\Sports Interactive\Football Manager 27\graphics" do seu
+    utilizador Windows é detetada automaticamente. Se tiver o pacote gráfico
+    noutro disco, clique em "Procurar..." para o selecionar.
+  - Clique em "Instalar e Iniciar »" para instalar a aplicação, criar atalhos
+    no Ambiente de Trabalho e Menu Iniciar e registar o desinstalador oficial
+    nas Aplicações Instaladas do Windows (Adicionar ou Remover Programas).
+
+• Opção B (Portátil / Sem Instalação):
+  Basta clicar duas vezes em "FM27 Trainer.exe" para executar diretamente sem
+  instalação. Todos os 3 idiomas (Português, Türkçe, English) estão integrados
+  diretamente no ficheiro executável.
+
+2. DESTAQUES E FUNCIONALIDADES DA VERSÃO v1.3.0
+-------------------------------------------------------------------------------
+• Vista Visual do Campo (Pitch View) e Sincronização de Táticas:
+  - No separador "Tática", um relvado detalhado mostra o seu 11 inicial nas
+    suas verdadeiras posições em campo com fotos dos jogadores (faces),
+    emblema de pontuação de adaptação, funções Com/Sem Bola e barra de condição.
+  - Alternar entre "Tática 1 / Tática 2 / Tática 3" altera a tática ativa na
+    memória do FM27 mantendo os jogadores alinhados nas suas posições.
+
+• Modelos de 11 Inicial Guardados e "Aplicar Melhor 11 no Jogo":
+  - Clique em "Aplicar Melhor 11 no Jogo" para colocar automaticamente os 11
+    jogadores com maior adaptação na tática ativa do FM27.
+  - Escreva um nome para o modelo (ex. "11 Titular", "Taça", "Rotação") e
+    clique em "Guardar 11 Atual" para guardar até 10 modelos e carregá-los com
+    um único clique.
+
+• Troca Interativa de Sessões de Treino (2 Cliques e Menu do Botão Direito):
+  - Em "Treino -> Próximas Semanas", clique com o botão esquerdo em duas
+    sessões de treino para as trocar de lugar, ou clique com o BOTÃO DIREITO
+    em qualquer sessão para escolher outro treino da lista completa e gravar
+    instantaneamente no FM27.
+
+• Pasta Graphics Unificada (Rostos de Jogadores e Emblemas de Clubes):
+  - Encontra e carrega automaticamente o emblema do clube ligado na barra
+    lateral e os rostos dos jogadores nos separadores Plantel e Tática a
+    partir de uma única pasta "graphics".
+
+• Saúde do Plantel e Compreensão Tática (Fixar em 100%):
+  - Barra de ação rápida no topo do separador Plantel para Curar Todos,
+    Limpar Castigos, Maximizar a Moral de Todos e Maximizar a Compreensão Tática.
+
+3. CONTACTO E COMUNIDADE
+-------------------------------------------------------------------------------
+• Discord : https://discord.gg/SYExYVpHP9
+• Kick    : https://kick.com/holyman3
+• Email   : holyymann3@gmail.com
+• GitHub  : https://github.com/Holymanrepo/Holyman3-Antreman-fm27
+===============================================================================
