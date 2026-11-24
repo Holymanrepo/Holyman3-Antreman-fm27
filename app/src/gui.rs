@@ -86,40 +86,85 @@ struct Settings {
     /// FM27 graphics ana klasörü (kulüp logoları, formalar, yüzler vb. için).
     #[serde(default = "default_graphics_dir")]
     graphics_dir: String,
+    /// İlk kurulum / ilk açılış dil seçimi tamamlandı mı?
+    #[serde(default)]
+    lang_chosen: bool,
+    /// Kayıtlı İlk 11 Şablonları (en fazla 10 şablon).
+    #[serde(default)]
+    saved_lineups: Vec<crate::tactics::SavedLineup>,
     planner: PlannerSettings,
 }
 
-fn default_graphics_dir() -> String {
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let p = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 27\\graphics");
-        if p.exists() {
-            return p.to_string_lossy().into_owned();
-        }
-        let p26 = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 26\\graphics");
-        if p26.exists() {
-            return p26.to_string_lossy().into_owned();
+fn user_documents_dir() -> PathBuf {
+    for var in ["OneDriveConsumer", "OneDrive"] {
+        if let Ok(od) = std::env::var(var) {
+            let docs = PathBuf::from(&od).join("Documents");
+            if docs.join("Sports Interactive").exists() {
+                return docs;
+            }
         }
     }
-    "C:\\Users\\Emre\\Documents\\Sports Interactive\\Football Manager 27\\graphics".into()
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        return PathBuf::from(profile).join("Documents");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join("Documents");
+    }
+    PathBuf::from("Documents")
+}
+
+fn default_graphics_dir() -> String {
+    let docs = user_documents_dir();
+    let p27 = docs.join("Sports Interactive\\Football Manager 27\\graphics");
+    if p27.exists() {
+        return p27.to_string_lossy().into_owned();
+    }
+    let p26 = docs.join("Sports Interactive\\Football Manager 26\\graphics");
+    if p26.exists() {
+        return p26.to_string_lossy().into_owned();
+    }
+    p27.to_string_lossy().into_owned()
 }
 
 fn default_faces_dir() -> String {
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let p = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 27\\graphics\\faces");
-        if p.exists() {
-            return p.to_string_lossy().into_owned();
-        }
-        let p26 = PathBuf::from(&profile).join("Documents\\Sports Interactive\\Football Manager 26\\graphics\\faces");
-        if p26.exists() {
-            return p26.to_string_lossy().into_owned();
+    let docs = user_documents_dir();
+    let p27 = docs.join("Sports Interactive\\Football Manager 27\\graphics\\faces");
+    if p27.exists() {
+        return p27.to_string_lossy().into_owned();
+    }
+    let p26 = docs.join("Sports Interactive\\Football Manager 26\\graphics\\faces");
+    if p26.exists() {
+        return p26.to_string_lossy().into_owned();
+    }
+    p27.to_string_lossy().into_owned()
+}
+
+fn pick_folder_dialog(initial: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let escaped = initial.replace('\'', "''");
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.SelectedPath = '{}'; if ($f.ShowDialog() -eq 'OK') {{ [Console]::Out.Write($f.SelectedPath) }}",
+            escaped
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
         }
     }
-    "C:\\Users\\Emre\\Documents\\Sports Interactive\\Football Manager 27\\graphics\\faces".into()
+    None
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, easy_talk: crate::tactics::EasyTalkSettings::default(), faces_dir: default_faces_dir(), graphics_dir: default_graphics_dir(), planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: true, keep_understanding: false, auto_individual: true, auto_read: false, auto_read_secs: 10, manager_club: None, training_team: None, easy_talk: crate::tactics::EasyTalkSettings::default(), faces_dir: default_faces_dir(), graphics_dir: default_graphics_dir(), lang_chosen: false, saved_lineups: Vec::new(), planner: PlannerSettings::default() }
     }
 }
 
@@ -204,6 +249,8 @@ struct App {
     easy_talk_show_role_focus: bool,
     face_textures: std::collections::HashMap<u32, Option<egui::TextureHandle>>,
     club_logo_textures: std::collections::HashMap<u32, Option<egui::TextureHandle>>,
+    new_lineup_name: String,
+    swap_training_slot: Option<(NaiveDate, usize, usize)>,
     frames: u32,
     logo_tex: Option<egui::TextureHandle>,
     update_rx: Option<mpsc::Receiver<Result<Option<ReleaseInfo>, String>>>,
@@ -369,17 +416,25 @@ fn spawn_update_check() -> mpsc::Receiver<Result<Option<ReleaseInfo>, String>> {
                             .get("assets")
                             .and_then(|a| a.as_array())
                             .and_then(|arr| {
-                                arr.iter().find_map(|asset| {
-                                    let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                                    if name.to_ascii_lowercase().ends_with(".exe") {
-                                        asset
-                                            .get("browser_download_url")
-                                            .and_then(|u| u.as_str())
-                                            .map(|s| s.to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
+                                arr.iter()
+                                    .find_map(|asset| {
+                                        let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("").to_ascii_lowercase();
+                                        if name.ends_with(".exe") && !name.contains("setup") {
+                                            asset.get("browser_download_url").and_then(|u| u.as_str()).map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .or_else(|| {
+                                        arr.iter().find_map(|asset| {
+                                            let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                            if name.to_ascii_lowercase().ends_with(".exe") {
+                                                asset.get("browser_download_url").and_then(|u| u.as_str()).map(|s| s.to_string())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    })
                             });
                         if !clean.is_empty() && is_newer_version(clean, current) {
                             Ok(Some(ReleaseInfo {
@@ -460,6 +515,17 @@ impl App {
             let _ = std::fs::remove_file(cur_exe.with_extension("old.exe"));
         }
         let mut settings: Settings = std::fs::read_to_string(settings_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if settings.graphics_dir.trim().is_empty() || !PathBuf::from(&settings.graphics_dir).exists() {
+            settings.graphics_dir = default_graphics_dir();
+        }
+        if settings.faces_dir.trim().is_empty() || !PathBuf::from(&settings.faces_dir).exists() {
+            let sub = PathBuf::from(&settings.graphics_dir).join("faces");
+            if sub.exists() {
+                settings.faces_dir = sub.to_string_lossy().into_owned();
+            } else {
+                settings.faces_dir = default_faces_dir();
+            }
+        }
         settings.allow_untested = true;
         i18n::set(settings.lang);
         let cal_opts = CalendarOptions::default();
@@ -515,6 +581,8 @@ impl App {
             easy_talk_show_role_focus: false,
             face_textures: std::collections::HashMap::new(),
             club_logo_textures: std::collections::HashMap::new(),
+            new_lineup_name: String::new(),
+            swap_training_slot: None,
             live: LiveState::default(),
             frames: 0,
             logo_tex: None,
@@ -800,7 +868,6 @@ impl App {
                 let items = [
                     (Page::Overview, icon::GAUGE, t!("Genel Bakış", "Overview")),
                     (Page::Training, icon::BARBELL, t!("Antrenman", "Training")),
-                    (Page::EasyTalk, icon::SMILEY, t!("Easy Talk", "Easy Talk")),
                     (Page::Planning, icon::CALENDAR_DOTS, t!("Planlama", "Planning")),
                     (Page::Squad, icon::USERS_THREE, t!("Kadro", "Squad")),
                     (Page::Tactics, icon::STRATEGY, t!("Taktik", "Tactics")),
@@ -850,6 +917,13 @@ impl App {
                         ui.set_max_width(sb_w);
                         ui.label(theme::caps(t!("İletişim", "Contact")));
                         ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let (logo_rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
+                            theme::paint_discord_logo(ui.painter(), logo_rect);
+                            if ui.add(egui::Label::new(RichText::new("Discord · Holyman3").size(12.5).color(Color32::from_rgb(138, 150, 255))).sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                open_url(DISCORD_URL);
+                            }
+                        });
                         ui.horizontal(|ui| {
                             let (logo_rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
                             theme::paint_kick_logo(ui.painter(), logo_rect);
@@ -1463,10 +1537,34 @@ impl App {
             ui.add_space(10.0);
             legend(ui);
         });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(theme::faint(t!(
+                "💡 İpucu: İki seansın yerini değiştirmek için önce birine sonra diğerine sol tıklayın (aynı hafta içinde). Seansı başka bir antrenmanla değiştirmek için üzerine sağ tıklayın.",
+                "💡 Tip: Left-click two sessions in the same week to swap them. Right-click any session to replace it with another training session.",
+                "💡 Dica: Clique com o botão esquerdo em duas sessões na mesma semana para trocá-las. Clique com o botão direito para escolher outra sessão."
+            )));
+            if let Some((sw_start, sw_d, sw_s)) = self.swap_training_slot {
+                theme::pill(
+                    ui,
+                    &t!(
+                        format!("Seçili: {} {} {}. öğün (iptal için tekrar tıklayın)", i18n::date_short(sw_start), i18n::weekday_short(sw_d), sw_s + 1),
+                        format!("Selected: {} {} slot {} (click again to cancel)", i18n::date_short(sw_start), i18n::weekday_short(sw_d), sw_s + 1)
+                    ),
+                    theme::ACCENT_HI,
+                );
+            }
+        });
         ui.add_space(6.0);
+        let mut schedule_update: Option<(NaiveDate, Vec<[u16; 3]>, String)> = None;
         for w in &o.weeks {
-            week_card(ui, w, o.today, &self.live.fm_had);
+            if let Some(upd) = week_card(ui, w, o.today, &self.live.fm_had, &mut self.swap_training_slot) {
+                schedule_update = Some(upd);
+            }
             ui.add_space(10.0);
+        }
+        if let Some((st, days, msg)) = schedule_update {
+            self.live.write_week_schedule(ctx, st, days, msg);
         }
     }
 
@@ -2407,23 +2505,42 @@ impl App {
         }
     }
 
-    fn draw_player_avatar(&mut self, ui: &mut Ui, ctx: &egui::Context, uid: u32, size: f32) {
+    fn ensure_player_avatar_loaded(&mut self, ctx: &egui::Context, uid: u32) -> Option<egui::TextureHandle> {
         if !self.face_textures.contains_key(&uid) {
             let loaded = (|| -> Option<egui::TextureHandle> {
-                if self.settings.faces_dir.trim().is_empty() {
-                    return None;
+                let g_trim = self.settings.graphics_dir.trim();
+                let f_trim = self.settings.faces_dir.trim();
+                let mut search_dirs = Vec::new();
+                if !g_trim.is_empty() {
+                    let g_base = PathBuf::from(g_trim);
+                    search_dirs.push(g_base.join("faces"));
+                    search_dirs.push(g_base.join("Faces"));
+                    search_dirs.push(g_base.join("players"));
+                    search_dirs.push(g_base);
                 }
-                let dir = PathBuf::from(self.settings.faces_dir.trim());
-                if !dir.is_dir() {
-                    return None;
+                if !f_trim.is_empty() {
+                    let f_dir = PathBuf::from(f_trim);
+                    if !search_dirs.contains(&f_dir) {
+                        search_dirs.push(f_dir);
+                    }
                 }
-                let candidates = [
-                    dir.join(format!("face_{uid}.png")),
-                    dir.join(format!("{uid}.png")),
-                    dir.join(format!("face_{uid} (1).png")),
-                    dir.join(format!("{uid} (1).png")),
-                ];
-                let path = candidates.into_iter().find(|p| p.is_file())?;
+                let mut found_path = None;
+                for dir in search_dirs {
+                    if !dir.is_dir() {
+                        continue;
+                    }
+                    let candidates = [
+                        dir.join(format!("face_{uid}.png")),
+                        dir.join(format!("{uid}.png")),
+                        dir.join(format!("face_{uid} (1).png")),
+                        dir.join(format!("{uid} (1).png")),
+                    ];
+                    if let Some(p) = candidates.into_iter().find(|p| p.is_file()) {
+                        found_path = Some(p);
+                        break;
+                    }
+                }
+                let path = found_path?;
                 let img = image::open(&path).ok()?.into_rgba8();
                 let (w, h) = img.dimensions();
                 let color_img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
@@ -2431,15 +2548,151 @@ impl App {
             })();
             self.face_textures.insert(uid, loaded);
         }
+        self.face_textures.get(&uid).and_then(|o| o.clone())
+    }
 
+    fn draw_player_avatar(&mut self, ui: &mut Ui, ctx: &egui::Context, uid: u32, size: f32) {
+        let tex_opt = self.ensure_player_avatar_loaded(ctx, uid);
         let (rect, _) = ui.allocate_exact_size(vec2(size, size), egui::Sense::hover());
-        if let Some(Some(tex)) = self.face_textures.get(&uid) {
+        if let Some(tex) = tex_opt {
             ui.painter().rect_filled(rect, CornerRadius::same(5), Color32::from_rgb(20, 23, 30));
-            egui::Image::from_texture(tex)
+            egui::Image::from_texture(&tex)
                 .corner_radius(CornerRadius::same(5))
                 .paint_at(ui, rect);
         } else {
             theme::paint_silhouette_avatar(ui.painter(), rect);
+        }
+    }
+
+    fn draw_tactics_pitch(
+        &self,
+        ui: &mut Ui,
+        places: &[crate::tactics::Place],
+        coords: &[(f32, f32)],
+        by_uid: &std::collections::HashMap<u32, &crate::tactics::Player>,
+        pitch_w: f32,
+    ) {
+        let pitch_w = pitch_w.max(250.0);
+        let pitch_h = 465.0f32;
+        let (rect, _) = ui.allocate_exact_size(vec2(pitch_w, pitch_h), egui::Sense::hover());
+        let painter = ui.painter();
+
+        // Çim saha arka planı + yatay çim şeritleri
+        painter.rect_filled(rect, CornerRadius::same(10), Color32::from_rgb(23, 56, 36));
+        let stripes = 8;
+        let sh = rect.height() / stripes as f32;
+        for s in 0..stripes {
+            if s % 2 == 1 {
+                let sr = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + s as f32 * sh), vec2(rect.width(), sh));
+                painter.rect_filled(sr, CornerRadius::same(0), Color32::from_rgba_unmultiplied(255, 255, 255, 7));
+            }
+        }
+
+        // Saha çizgileri
+        let line_col = Color32::from_rgba_unmultiplied(210, 235, 215, 75);
+        let line_stroke = Stroke::new(1.3_f32, line_col);
+        let inner = rect.shrink(10.0);
+        painter.rect_stroke(inner, CornerRadius::same(4), line_stroke, egui::StrokeKind::Inside);
+        // Orta çizgi ve orta yuvarlak
+        let mid_y = inner.center().y;
+        painter.hline(inner.x_range(), mid_y, line_stroke);
+        painter.circle_stroke(inner.center(), 36.0, line_stroke);
+        // Üst ve alt ceza sahaları
+        let box_w = inner.width() * 0.56;
+        let box_h = 56.0;
+        let top_box = egui::Rect::from_min_size(egui::pos2(inner.center().x - box_w * 0.5, inner.top()), vec2(box_w, box_h));
+        let bot_box = egui::Rect::from_min_size(egui::pos2(inner.center().x - box_w * 0.5, inner.bottom() - box_h), vec2(box_w, box_h));
+        painter.rect_stroke(top_box, CornerRadius::same(0), line_stroke, egui::StrokeKind::Inside);
+        painter.rect_stroke(bot_box, CornerRadius::same(0), line_stroke, egui::StrokeKind::Inside);
+
+        // 11 Oyuncu Kartı
+        for (i, pl) in places.iter().enumerate() {
+            let (nx, ny) = coords.get(i).copied().unwrap_or((0.5, 0.5));
+            let cx = inner.left() + nx * inner.width();
+            let cy = inner.top() + ny * inner.height();
+            let center = egui::pos2(cx, cy);
+
+            let (ic, _) = crate::tactics::ip_label(pl.ip);
+            let (oc, _) = crate::tactics::oop_label(pl.oop);
+            let player_opt = pl.uid.and_then(|u| by_uid.get(&u)).copied();
+
+            // Avatar kutusu (32x32)
+            let av_size = 32.0f32;
+            let av_rect = egui::Rect::from_center_size(egui::pos2(center.x, center.y - 10.0), vec2(av_size, av_size));
+            painter.rect_filled(av_rect.expand(1.5), CornerRadius::same(7), Color32::from_rgb(14, 18, 24));
+            if let Some(p) = player_opt {
+                if let Some(Some(tex)) = self.face_textures.get(&p.uid) {
+                    egui::Image::from_texture(tex)
+                        .corner_radius(CornerRadius::same(6))
+                        .paint_at(ui, av_rect);
+                } else {
+                    theme::paint_silhouette_avatar(painter, av_rect);
+                }
+                let f = crate::tactics::fit(p, pl);
+                let fit_col = theme::rgb(level_color(f));
+                painter.rect_stroke(av_rect.expand(1.5), CornerRadius::same(7), Stroke::new(1.5_f32, fit_col), egui::StrokeKind::Inside);
+
+                // Uyum puanı rozeti (sağ üst köşe)
+                let badge_rect = egui::Rect::from_center_size(egui::pos2(av_rect.right() + 3.0, av_rect.top() + 3.0), vec2(21.0, 14.0));
+                painter.rect_filled(badge_rect, CornerRadius::same(4), fit_col);
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{f:.0}"),
+                    egui::FontId::new(9.5, theme::bold()),
+                    Color32::from_rgb(12, 16, 20),
+                );
+
+                // Rol + İsim + Kondisyon etiketi (alt kısım)
+                let short_name = p
+                    .name
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or(p.name.as_str());
+                let lbl_w = 72.0f32;
+                let lbl_rect = egui::Rect::from_center_size(egui::pos2(center.x, av_rect.bottom() + 13.0), vec2(lbl_w, 22.0));
+                painter.rect_filled(lbl_rect, CornerRadius::same(5), Color32::from_rgba_unmultiplied(13, 16, 23, 235));
+                painter.rect_stroke(lbl_rect, CornerRadius::same(5), Stroke::new(1.0_f32, Color32::from_rgb(42, 48, 62)), egui::StrokeKind::Inside);
+
+                let role_str = format!("{ic}/{oc}");
+                painter.text(
+                    egui::pos2(lbl_rect.center().x, lbl_rect.top() + 5.5),
+                    egui::Align2::CENTER_CENTER,
+                    role_str,
+                    egui::FontId::new(8.5, theme::bold()),
+                    theme::ACCENT_HI,
+                );
+                let disp_name: String = if short_name.chars().count() > 10 {
+                    format!("{}…", short_name.chars().take(9).collect::<String>())
+                } else {
+                    short_name.to_string()
+                };
+                painter.text(
+                    egui::pos2(lbl_rect.center().x, lbl_rect.bottom() - 6.0),
+                    egui::Align2::CENTER_CENTER,
+                    disp_name,
+                    egui::FontId::new(10.0, theme::bold()),
+                    Color32::WHITE,
+                );
+
+                // İnce kondisyon çubuğu (etiketin hemen altında)
+                let cond_pct = (p.condition as f32 / 100.0).clamp(0.0, 1.0);
+                let bar_bg = egui::Rect::from_min_size(egui::pos2(lbl_rect.left() + 4.0, lbl_rect.bottom() + 1.5), vec2(lbl_w - 8.0, 2.5));
+                painter.rect_filled(bar_bg, CornerRadius::same(1), Color32::from_rgb(30, 35, 45));
+                let bar_fg = egui::Rect::from_min_size(bar_bg.min, vec2(bar_bg.width() * cond_pct, bar_bg.height()));
+                painter.rect_filled(bar_fg, CornerRadius::same(1), theme::rgb(level_color(p.condition as f32)));
+            } else {
+                theme::paint_silhouette_avatar(painter, av_rect);
+                let lbl_rect = egui::Rect::from_center_size(egui::pos2(center.x, av_rect.bottom() + 11.0), vec2(60.0, 16.0));
+                painter.rect_filled(lbl_rect, CornerRadius::same(4), Color32::from_rgba_unmultiplied(13, 16, 23, 210));
+                painter.text(
+                    lbl_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{ic}/{oc}"),
+                    egui::FontId::new(9.0, theme::bold()),
+                    theme::TEXT_FAINT,
+                );
+            }
         }
     }
 
@@ -3146,8 +3399,8 @@ impl App {
         }
         let connected = self.live.connected || (from_file.is_some() && self.live.tactics.is_some());
         let busy = self.live.tactics_busy();
-        // bij het openen één keer vanzelf ophalen
-        if connected && !self.tactics_asked && from_file.is_none() {
+        // bij het openen één keer vanzelf ophalen, eğer henüz okunmadıysa
+        if connected && !self.tactics_asked && self.live.tactics.is_none() && from_file.is_none() {
             self.tactics_asked = true;
             self.live.load_tactics(ctx);
         }
@@ -3288,13 +3541,145 @@ impl App {
                 .unwrap_or((t!("ilk 11 seçilmedi", "no XI selected").to_string(), 0.0));
             theme::stat_tile(&mut c[2], icon::WARNING, t!("En Zayıf Mevki", "Weakest Slot"), &format!("{wval:.0}"), &wname, theme::rgb(level_color(wval)), Some(wval));
         });
-        ui.add_space(14.0);
+        ui.add_space(12.0);
 
-        // de elf plekken
+        // ---- KAYITLI İLK 11 ŞABLONLARI & HIZLI DİZİLİŞ BARI ----
+        let mut lineup_action: Option<(String, Vec<u32>)> = None;
+        let current_uids: Vec<u32> = places.iter().map(|pl| pl.uid.unwrap_or(0)).collect();
+        let best_uids: Vec<u32> = if best.len() == places.len() {
+            best.iter().map(|&j| data.players[j].uid).collect()
+        } else {
+            Vec::new()
+        };
+
         theme::card(ui, |ui| {
-            ui.label(theme::h2(t!("Bu Taktikteki İlk 11'iniz", "Your Starting XI in This Tactic")));
-            ui.add_space(6.0);
-            egui::Grid::new("tactic_slots").num_columns(6).spacing([18.0, 10.0]).striped(true).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(theme::ic(icon::USERS_THREE).color(theme::ACCENT_HI).size(16.0));
+                ui.label(theme::label_strong(t!(
+                    "Kayıtlı İlk 11 Şablonları:",
+                    "Saved Starting XI Templates:",
+                    "Modelos de 11 Inicial Guardados:"
+                )));
+
+                if !best_uids.is_empty()
+                    && theme::primary_button(
+                        ui,
+                        icon::SPARKLE,
+                        t!("En İyi 11'i Oyuna Diz", "Apply Best XI to Game", "Aplicar Melhor 11 no Jogo"),
+                        connected,
+                    )
+                    .clicked()
+                {
+                    lineup_action = Some((t!("En İyi 11", "Best XI", "Melhor 11").into(), best_uids.clone()));
+                }
+
+                let mut delete_idx: Option<usize> = None;
+                let saved_clone = self.settings.saved_lineups.clone();
+                for (idx, sl) in saved_clone.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        if theme::button(
+                            ui,
+                            icon::STRATEGY,
+                            &sl.name,
+                            connected,
+                        )
+                        .on_hover_text(t!(
+                            "Bu kayıtlı 11'i FM27'de aktif taktiğe dizmek için tıklayın",
+                            "Click to load this saved XI into FM27",
+                            "Clique para carregar este 11 guardado no FM27"
+                        ))
+                        .clicked()
+                        {
+                            lineup_action = Some((sl.name.clone(), sl.uids.clone()));
+                        }
+                        if theme::small_button(ui, "×", true)
+                            .on_hover_text(t!("Şablonu sil", "Delete template", "Eliminar modelo"))
+                            .clicked()
+                        {
+                            delete_idx = Some(idx);
+                        }
+                    });
+                }
+                if let Some(d) = delete_idx {
+                    self.settings.saved_lineups.remove(d);
+                    self.save_settings();
+                }
+
+                ui.separator();
+                let name_edit = egui::TextEdit::singleline(&mut self.new_lineup_name)
+                    .hint_text(t!("Şablon adı (örn. As 11, Kupa 11)…", "Template name (e.g. Main XI, Cup XI)…", "Nome do modelo (ex. 11 Titular)…"))
+                    .desired_width(175.0);
+                ui.add(name_edit);
+                let can_save = current_uids.iter().filter(|&&u| u != 0).count() >= 7
+                    && self.settings.saved_lineups.len() < 10;
+                if theme::button(
+                    ui,
+                    icon::CHECK_CIRCLE,
+                    t!("Mevcut 11'i Kaydet", "Save Current XI", "Guardar 11 Atual"),
+                    can_save,
+                )
+                .clicked()
+                {
+                    let name = if self.new_lineup_name.trim().is_empty() {
+                        format!("11 #{}", self.settings.saved_lineups.len() + 1)
+                    } else {
+                        self.new_lineup_name.trim().to_string()
+                    };
+                    self.settings.saved_lineups.push(tx::SavedLineup {
+                        name,
+                        uids: current_uids.clone(),
+                    });
+                    self.new_lineup_name.clear();
+                    self.save_settings();
+                }
+            });
+        });
+        if let Some((lbl, uids)) = lineup_action {
+            self.live.apply_lineup(ctx, &lbl, uids);
+        }
+        ui.add_space(12.0);
+
+        // ---- GÖRSEL SAHA DİZİLİŞİ (PITCH VIEW) + İLK 11 TABLOSU ----
+        let pitch_coords = tx::pitch_coordinates(&places);
+        for &i in &order {
+            if let Some(uid) = places[i].uid {
+                let _ = self.ensure_player_avatar_loaded(ctx, uid);
+            }
+        }
+
+        let avail_w = ui.available_width();
+        let pitch_w = 345.0f32.min(avail_w * 0.34).max(280.0);
+        let table_w = (avail_w - pitch_w - 14.0).max(400.0);
+
+        ui.horizontal_top(|ui| {
+            // SOL: GÖRSEL SAHA DİZİLİŞİ (Pitch View)
+            ui.vertical(|ui| {
+                ui.set_width(pitch_w);
+                ui.set_max_width(pitch_w);
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::h2(t!("Saha Dizilişi", "Pitch View", "Vista do Campo")));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            theme::pill(ui, &format!("{avg:.0}%"), theme::rgb(level_color(avg)));
+                        });
+                    });
+                    ui.add_space(6.0);
+                    self.draw_tactics_pitch(ui, &places, &pitch_coords, &by_uid, pitch_w - 28.0);
+                });
+            });
+
+            ui.add_space(12.0);
+
+            // SAĞ: BU TAKTİKTEKİ İLK 11'İNİZ TABLOSU
+            ui.vertical(|ui| {
+                ui.set_width(table_w);
+                ui.set_max_width(table_w);
+                theme::card(ui, |ui| {
+                    ui.label(theme::h2(t!("Bu Taktikteki İlk 11'iniz", "Your Starting XI in This Tactic")));
+                    ui.add_space(6.0);
+                    egui::Grid::new("tactic_slots").num_columns(6).spacing([14.0, 9.0]).striped(true).show(ui, |ui| {
                 for h in [
                     t!("Mevki", "Line"),
                     t!("Topla / Topsuz Rol", "IP / OOP Role"),
@@ -3369,7 +3754,10 @@ impl App {
                     ui.end_row();
                 }
             });
+                });
+            });
         });
+        ui.add_space(12.0);
 
         // de beste elf: alleen wat anders is dan nu
         theme::card(ui, |ui| {
@@ -3481,8 +3869,13 @@ impl App {
                     ui.label(theme::ic(icon::TRANSLATE).color(theme::ACCENT));
                     ui.label(t!("Uygulama Dili:", "App Language:"));
                     let mut lang = self.settings.lang;
-                    if theme::segmented(ui, &mut lang, &[(Lang::Tr, "Türkçe"), (Lang::En, "English")]) {
+                    if theme::segmented(
+                        ui,
+                        &mut lang,
+                        &[(Lang::Tr, "Türkçe"), (Lang::En, "English"), (Lang::Pt, "Português")],
+                    ) {
                         self.settings.lang = lang;
+                        self.settings.lang_chosen = true;
                         i18n::set(lang);
                         dirty = true;
                     }
@@ -3498,7 +3891,7 @@ impl App {
                 ui.label(RichText::new(t!("FM27 Graphics Klasörü (Logolar, Formalar, Yüzler):", "FM27 Graphics Folder (Logos, Kits, Faces):")).color(theme::TEXT));
                 ui.add_space(3.0);
                 ui.horizontal(|ui| {
-                    let avail = (ui.available_width() - 80.0).max(120.0);
+                    let avail = (ui.available_width() - 145.0).max(120.0);
                     if ui
                         .add_sized(
                             vec2(avail, 26.0),
@@ -3506,8 +3899,22 @@ impl App {
                         )
                         .changed()
                     {
+                        self.settings.faces_dir = PathBuf::from(&self.settings.graphics_dir)
+                            .join("faces")
+                            .to_string_lossy()
+                            .into_owned();
                         self.club_logo_textures.clear();
+                        self.face_textures.clear();
                         dirty = true;
+                    }
+                    if theme::small_button(ui, t!("Gözat…", "Browse…"), true).clicked() {
+                        if let Some(chosen) = pick_folder_dialog(&self.settings.graphics_dir) {
+                            self.settings.graphics_dir = chosen.clone();
+                            self.settings.faces_dir = PathBuf::from(&chosen).join("faces").to_string_lossy().into_owned();
+                            self.face_textures.clear();
+                            self.club_logo_textures.clear();
+                            dirty = true;
+                        }
                     }
                     if theme::small_button(ui, t!("Yenile", "Reload"), true).clicked() {
                         self.club_logo_textures.clear();
@@ -3515,31 +3922,8 @@ impl App {
                     }
                 });
                 ui.label(theme::faint(t!(
-                    "FM'ye bağlı kulübün logosunu ve ileriki grafik paketlerini (graphics) bu klasörden otomatik yükler.",
-                    "Automatically loads the connected club's logo and graphics packs from this folder."
-                )));
-                ui.add_space(8.0);
-                ui.label(RichText::new(t!("Oyuncu Yüzleri Klasörü (Faces):", "Player Faces Folder:")).color(theme::TEXT));
-                ui.add_space(3.0);
-                ui.horizontal(|ui| {
-                    let avail = (ui.available_width() - 80.0).max(120.0);
-                    if ui
-                        .add_sized(
-                            vec2(avail, 26.0),
-                            egui::TextEdit::singleline(&mut self.settings.faces_dir),
-                        )
-                        .changed()
-                    {
-                        self.face_textures.clear();
-                        dirty = true;
-                    }
-                    if theme::small_button(ui, t!("Yüzleri Yenile", "Reload Faces"), true).clicked() {
-                        self.face_textures.clear();
-                    }
-                });
-                ui.label(theme::faint(t!(
-                    "Easy Talk, Kadro ve Taktik ekranlarında oyuncu adlarının yanında yüz paketini (face_<uid>.png) gösterir.",
-                    "Displays player portraits (face_<uid>.png) next to names in Easy Talk, Squad and Tactics."
+                    "FM'ye bağlı kulübün logosunu (logos) ve tüm oyuncu yüzlerini (faces) bu graphics klasörü içinden otomatik bulur ve yükler.",
+                    "Automatically finds and loads the connected club's logo (logos) and all player portraits (faces) directly from this graphics folder."
                 )));
             });
             theme::card(&mut cols[1], |ui| {
@@ -3970,10 +4354,8 @@ impl eframe::App for App {
             });
         if self.analysis_rx.is_some() || self.live.busy() || self.self_updating {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else if self.settings.auto_read {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs(5));
+            ctx.request_repaint_after(std::time::Duration::from_millis(1000));
         }
     }
 }
@@ -3982,6 +4364,7 @@ impl eframe::App for App {
 
 /// Contactgegevens.
 const KICK_URL: &str = "https://kick.com/holyman3";
+const DISCORD_URL: &str = "https://discord.gg/SYExYVpHP9";
 const CONTACT_EMAIL: &str = "holyymann3@gmail.com";
 
 fn open_url(url: &str) {
@@ -4147,10 +4530,10 @@ fn chip_name(name: &str) -> String {
     }
 }
 
-fn chip(ui: &mut Ui, name: &str, highlight: bool, faded: bool) {
+fn chip(ui: &mut Ui, name: &str, highlight: bool, faded: bool) -> egui::Response {
     let col = if name == "Match" { theme::DANGER } else { theme::rgb(category_of(name).color()) };
     let col = if faded { theme::tint(col, 0.45) } else { col };
-    theme::session_chip(ui, &chip_name(name), col, highlight).on_hover_text(crate::model::session_tr(name));
+    theme::session_chip(ui, &chip_name(name), col, highlight).on_hover_text(crate::model::session_tr(name))
 }
 
 fn step_card(ui: &mut Ui, n: u8, icon_s: &str, title: &str, body: impl FnOnce(&mut Ui)) {
@@ -4171,7 +4554,14 @@ fn codes_text(c: &[u16; 3]) -> String {
     c.iter().map(|x| chip_name(session_by_code(*x).unwrap_or("?"))).collect::<Vec<_>>().join(" · ")
 }
 
-fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDate>, fm_had: &std::collections::HashMap<NaiveDate, [u16; 3]>) {
+fn week_card(
+    ui: &mut Ui,
+    w: &live_training::WeekPreview,
+    today: Option<NaiveDate>,
+    fm_had: &std::collections::HashMap<NaiveDate, [u16; 3]>,
+    swap_slot: &mut Option<(NaiveDate, usize, usize)>,
+) -> Option<(NaiveDate, Vec<[u16; 3]>, String)> {
+    let mut edited: Option<(NaiveDate, Vec<[u16; 3]>, String)> = None;
     theme::card(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(theme::h2(t!(
@@ -4202,13 +4592,86 @@ fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDat
                 let ui = &mut cols[d];
                 let date = w.start + Duration::days(d as i64);
                 let past = today.is_some_and(|t| date <= t);
+                let can_edit = !past && w.editable[d];
                 ui.label(theme::caps(i18n::weekday_short(d)));
                 ui.label(theme::faint(i18n::date_short(date)));
                 let differs = w.current[d] != w.planned[d];
                 let was = if differs { Some(w.current[d]) } else { fm_had.get(&date).copied().filter(|h| *h != w.planned[d]) };
-                for code in w.planned[d] {
+                for (s_idx, &code) in w.planned[d].iter().enumerate() {
                     let name = session_by_code(code).unwrap_or("?");
-                    chip(ui, name, was.is_some() && !past, past || !w.editable[d]);
+                    let is_selected = *swap_slot == Some((w.start, d, s_idx));
+                    let resp = chip(ui, name, (was.is_some() && !past) || is_selected, !can_edit);
+                    if can_edit && code != 500 && code != 402 {
+                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if is_selected {
+                            ui.painter().rect_stroke(
+                                resp.rect.expand(1.5),
+                                CornerRadius::same(7),
+                                Stroke::new(2.0_f32, theme::ACCENT_HI),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if resp.clicked() {
+                            match *swap_slot {
+                                Some((sw_start, sw_d, sw_s)) if sw_start == w.start => {
+                                    if sw_d == d && sw_s == s_idx {
+                                        *swap_slot = None;
+                                    } else {
+                                        let mut new_days = w.planned.clone();
+                                        let tmp = new_days[sw_d][sw_s];
+                                        new_days[sw_d][sw_s] = new_days[d][s_idx];
+                                        new_days[d][s_idx] = tmp;
+                                        *swap_slot = None;
+                                        let msg = t!(
+                                            format!("{} ile {} antrenman seansları yer değiştirildi ve FM27'ye yazıldı.", i18n::weekday_short(sw_d), i18n::weekday_short(d)),
+                                            format!("Swapped training sessions between {} and {} and wrote to FM27.", i18n::weekday_short(sw_d), i18n::weekday_short(d))
+                                        );
+                                        edited = Some((w.start, new_days, msg));
+                                    }
+                                }
+                                _ => {
+                                    *swap_slot = Some((w.start, d, s_idx));
+                                }
+                            }
+                        }
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(210.0);
+                            ui.label(theme::caps(t!("SEANSI DEĞİŞTİR", "CHANGE SESSION", "ALTERAR SESSÃO")));
+                            ui.separator();
+                            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                for sess in crate::model::SESSIONS {
+                                    if matches!(
+                                        sess.name,
+                                        "Match"
+                                            | "Travel"
+                                            | "Not Available"
+                                            | "Rest (IM)"
+                                            | "Recovery (IM)"
+                                            | "Light Conditioning (IM)"
+                                            | "Match Preparation"
+                                            | "Tactical Understanding IP"
+                                            | "Tactical Understanding OOP"
+                                    ) {
+                                        continue;
+                                    }
+                                    if let Some(scode) = crate::model::session_code(sess.name) {
+                                        let label = format!("{} ({})", chip_name(sess.name), sess.category.label());
+                                        if ui.selectable_label(scode == code, label).clicked() {
+                                            let mut new_days = w.planned.clone();
+                                            new_days[d][s_idx] = scode;
+                                            *swap_slot = None;
+                                            let msg = t!(
+                                                format!("{} {}. öğün '{}' olarak değiştirildi ve FM27'ye yazıldı.", i18n::weekday_short(d), s_idx + 1, chip_name(sess.name)),
+                                                format!("Changed {} slot {} to '{}' and wrote to FM27.", i18n::weekday_short(d), s_idx + 1, chip_name(sess.name))
+                                            );
+                                            edited = Some((w.start, new_days, msg));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    }
                 }
                 if let Some(h) = was.filter(|_| !past && w.editable[d]) {
                     ui.add(egui::Label::new(RichText::new(format!("FM: {}", codes_text(&h))).size(10.5).color(theme::TEXT_FAINT).strikethrough()).truncate())
@@ -4217,6 +4680,7 @@ fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDat
             }
         });
     });
+    edited
 }
 
 fn plan_grid(ui: &mut Ui, p: &WeekPlan) {
