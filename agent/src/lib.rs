@@ -211,6 +211,14 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             let idx = req.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             tactic::set_active_tactic(idx).map(|i| json!({"current": i}))
         }
+        "set_lineup" => {
+            let uids: Vec<u32> = req
+                .get("uids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            tactic::set_lineup(&uids).map(|n| json!({"lineup_changed": n}))
+        }
         "individual_training" => {
             let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
             tactic::apply_individual_training(&uids(req), mode).map(|o| json!(o))
