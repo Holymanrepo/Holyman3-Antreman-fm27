@@ -311,6 +311,56 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
         .response
 }
 
+/// Klikbaar klein gekleurd label met vaste hoogte (1 rij), zonder verticale rek.
+pub fn clickable_pill(ui: &mut Ui, text: &str, color: Color32, solid: bool) -> Response {
+    let font = FontId::new(11.5, semibold());
+    let fg = if solid { Color32::WHITE } else { color };
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, fg));
+    let size = vec2(galley.size().x + 16.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hov = ui.ctx().animate_bool_with_time(resp.id.with("p"), resp.hovered(), QUICK);
+    let bg = if solid {
+        mix(color, Color32::WHITE, 0.12 * hov)
+    } else {
+        tint(color, 0.18 + 0.12 * hov)
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(11), bg);
+    p.galley(rect.center() - galley.size() / 2.0, galley, fg);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Vierkante / afgeronde badge voor het trainingsrapportcijfer (bv. 9,50).
+pub fn rating_badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    let font = FontId::new(12.0, bold());
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE));
+    let size = vec2(galley.size().x.max(28.0) + 12.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(6), color);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    resp
+}
+
+/// Tekent een donkere spelers-silhouet avatar (zoals FM's standaard portret wanneer er geen foto is).
+pub fn paint_silhouette_avatar(p: &egui::Painter, rect: egui::Rect) {
+    let r = (rect.width() * 0.22).round() as u8;
+    p.rect_filled(rect, CornerRadius::same(r), Color32::from_rgb(13, 15, 20));
+    p.rect_stroke(rect, CornerRadius::same(r), Stroke::new(1.0_f32, Color32::from_rgb(46, 52, 66)), egui::StrokeKind::Inside);
+    let c = rect.center();
+    let w = rect.width();
+    let head_center = egui::pos2(c.x, rect.top() + w * 0.36);
+    let head_r = w * 0.17;
+    let body_col = Color32::from_rgb(56, 62, 78);
+    let rim_col = Color32::from_rgb(130, 140, 165);
+    p.circle_filled(head_center, head_r + 0.8, rim_col);
+    p.circle_filled(head_center, head_r, body_col);
+    let sh_rect = egui::Rect::from_center_size(
+        egui::pos2(c.x, rect.bottom() - w * 0.18),
+        vec2(w * 0.62, w * 0.32),
+    );
+    p.rect_filled(sh_rect, CornerRadius { nw: (w * 0.18) as u8, ne: (w * 0.18) as u8, sw: r, se: r }, body_col);
+}
+
 pub fn primary_button(ui: &mut Ui, icon_s: &str, text: &str, enabled: bool) -> Response {
     let job = icon_label(icon_s, text, FontId::new(14.0, semibold()), if enabled { Color32::WHITE } else { TEXT_FAINT });
     let galley = ui.fonts(|f| f.layout_job(job));
