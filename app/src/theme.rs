@@ -449,6 +449,25 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
 }
 
 pub const KICK_GREEN: Color32 = Color32::from_rgb(83, 252, 24);
+pub const DISCORD_BLURPLE: Color32 = Color32::from_rgb(88, 101, 242);
+
+/// Discord logosu (#5865F2 Blurple rozet içinde Clyde ikonu).
+pub fn paint_discord_logo(p: &egui::Painter, rect: egui::Rect) {
+    let rad = (rect.width() * 0.24).round() as u8;
+    p.rect_filled(rect, CornerRadius::same(rad), DISCORD_BLURPLE);
+    let inner = rect.shrink(rect.width() * 0.18);
+    // Clyde gövdesi
+    let body = egui::Rect::from_min_max(
+        egui::pos2(inner.left(), inner.top() + inner.height() * 0.12),
+        egui::pos2(inner.right(), inner.bottom() - inner.height() * 0.10),
+    );
+    p.rect_filled(body, CornerRadius::same((body.height() * 0.42).round() as u8), Color32::WHITE);
+    // Gözler
+    let eye_r = (inner.width() * 0.115).max(1.2);
+    let eye_y = body.center().y + inner.height() * 0.02;
+    p.circle_filled(egui::pos2(body.center().x - inner.width() * 0.20, eye_y), eye_r, DISCORD_BLURPLE);
+    p.circle_filled(egui::pos2(body.center().x + inner.width() * 0.20, eye_y), eye_r, DISCORD_BLURPLE);
+}
 
 /// Tekent het officiële Kick-logo (blok-K in #53FC18 op een donker kader) op de gegeven rect.
 pub fn paint_kick_logo(p: &egui::Painter, rect: egui::Rect) {
