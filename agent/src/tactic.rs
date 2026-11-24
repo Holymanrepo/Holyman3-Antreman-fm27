@@ -207,7 +207,7 @@ fn player(p: &PlayerInfo) -> Option<Player> {
     })
 }
 
-static CACHED_OBJS: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
+static CACHED_OBJS: std::sync::Mutex<(u64, u64, Vec<u64>)> = std::sync::Mutex::new((0, 0, Vec::new()));
 
 fn read_obj_raw(obj: u64, vts: &[u64]) -> Option<(u8, Vec<u32>, Option<Vec<u64>>)> {
     let vt = mem::u64_at(obj)?;
@@ -263,17 +263,17 @@ fn valid_tactic_count(blocks: &[u64], ids: &[u32], by_person: &HashMap<u32, u32>
 
 fn find_club_tactic_objects(
     by_person: &HashMap<u32, u32>,
-) -> Result<(u64, u64, u8, Vec<u32>, Vec<u64>), String> {
+) -> Result<(u64, u64, u8, Vec<u32>, Vec<u64>, Vec<u64>), String> {
     let img = mem::game_plugin().ok_or("game_plugin yüklenmedi")?;
     let vts = rtti::vtables_of(&img, &rtti::decorated("simatch", "PREPARED_TACTICS_CREATOR_ARRAY"));
     if vts.is_empty() {
         return Err("Kadro seçimleri bulunamadı".into());
     }
 
-    // Fast path: check cached (blocks_obj, sel_obj) pointers first (< 1ms)
+    // Fast path: check cached (blocks_obj, sel_obj, all_targets) pointers first (< 1ms)
     if let Ok(guard) = CACHED_OBJS.lock() {
-        let (b_addr, s_addr) = *guard;
-        if b_addr != 0 && s_addr != 0 {
+        let (b_addr, s_addr, ref cached_targets) = *guard;
+        if b_addr != 0 && s_addr != 0 && !cached_targets.is_empty() {
             if let (Some((b_cur, _, Some(blocks))), Some((s_cur, s_ids, _))) =
                 (read_obj_raw(b_addr, &vts), read_obj_raw(s_addr, &vts))
             {
@@ -285,7 +285,7 @@ fn find_club_tactic_objects(
                     } else {
                         b_cur
                     };
-                    return Ok((b_addr, s_addr, cur, s_ids, blocks));
+                    return Ok((b_addr, s_addr, cur, s_ids, blocks, cached_targets.clone()));
                 }
             }
         }
@@ -293,6 +293,7 @@ fn find_club_tactic_objects(
 
     let mut sel_candidates: Vec<(usize, u64, u8, Vec<u32>, Option<Vec<u64>>)> = Vec::new();
     let mut block_candidates: Vec<(bool, u64, u8, Vec<u64>)> = Vec::new();
+    let mut all_mine_addrs: Vec<u64> = Vec::new();
 
     for obj in rtti::instances(&vts, 4_000) {
         let Some((cur, ids, blocks_opt)) = read_obj_raw(obj, &vts) else {
@@ -301,6 +302,9 @@ fn find_club_tactic_objects(
         let mine_opt = count_mine(&ids, by_person);
         if let Some(mine) = mine_opt {
             sel_candidates.push((mine, obj, cur, ids, blocks_opt.clone()));
+            if !all_mine_addrs.contains(&obj) {
+                all_mine_addrs.push(obj);
+            }
         }
         if let Some(blocks) = blocks_opt {
             if blocks.iter().any(|b| mem::is_ptr(*b)) {
@@ -338,15 +342,37 @@ fn find_club_tactic_objects(
     }
 
     let (_, b_addr, b_cur, blocks) = best_block.ok_or("Taktik okunamıyor")?;
+    if !all_mine_addrs.contains(&b_addr) {
+        all_mine_addrs.push(b_addr);
+    }
+    if !all_mine_addrs.contains(&s_addr) {
+        all_mine_addrs.push(s_addr);
+    }
+    for delta in [0x11d0u64, 0x2108u64, 0x2170u64, 0x5808u64, 0x7978u64] {
+        for base in [b_addr, s_addr] {
+            for cand in [base.wrapping_add(delta), base.wrapping_sub(delta)] {
+                if let Some(raw) = mem::read_bytes(cand + SEL_SLOTS, SLOTS * 4) {
+                    let cand_ids: Vec<u32> = raw
+                        .chunks_exact(4)
+                        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    if count_mine(&cand_ids, by_person).is_some() && !all_mine_addrs.contains(&cand) {
+                        all_mine_addrs.push(cand);
+                    }
+                }
+            }
+        }
+    }
+
     if let Ok(mut guard) = CACHED_OBJS.lock() {
-        *guard = (b_addr, s_addr);
+        *guard = (b_addr, s_addr, all_mine_addrs.clone());
     }
     let cur = if (s_cur as usize) < blocks.len() {
         s_cur
     } else {
         b_cur
     };
-    Ok((b_addr, s_addr, cur, s_ids, blocks))
+    Ok((b_addr, s_addr, cur, s_ids, blocks, all_mine_addrs))
 }
 
 pub fn tactics() -> Result<Tactics, String> {
@@ -356,8 +382,8 @@ pub fn tactics() -> Result<Tactics, String> {
         .iter()
         .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
         .collect();
-    let (_b_addr, _s_addr, cur_raw, ids, blocks) = find_club_tactic_objects(&by_person)?;
-    let tactics: Vec<Tactic> = blocks
+    let (_b_addr, _s_addr, cur_raw, ids, blocks, _targets) = find_club_tactic_objects(&by_person)?;
+    let mut tactics: Vec<Tactic> = blocks
         .iter()
         .enumerate()
         .filter(|(_, b)| mem::is_ptr(**b))
@@ -370,6 +396,29 @@ pub fn tactics() -> Result<Tactics, String> {
         .iter()
         .position(|t| t.index == cur_raw as usize)
         .unwrap_or(0);
+
+    // FM27 yalnız aktif taktiğin `ids[0..11]` dizilişini `table[i]` sırasıyla saklar.
+    // Aktif olmayan bir taktikte (Taktik 1 / 2 / 3) `table[i]` (oop_order) farklı sırada olduğu için,
+    // `ids[i]` doğrudan eşleştirilirse stoper oyuncusu (Dobson) forvet, forvet oyuncusu (Riis) orta saha
+    // yuvasına kayar. Bu yüzden aktif taktikteki oyuncuların saha sırasını (`oop_order` -> `uid`) baz alıp
+    // diğer taktiklerde de her oyuncuyu kendi gerçek saha sırasındaki (`oop_order`) yuvaya yerleştiriyoruz.
+    let mut uid_by_oop_order = [None; SLOTS];
+    for s in &tactics[current].slots {
+        let ord = (s.oop_order as usize).min(SLOTS - 1);
+        uid_by_oop_order[ord] = s.uid;
+    }
+    for (ti, t) in tactics.iter_mut().enumerate() {
+        if ti == current {
+            continue;
+        }
+        for s in &mut t.slots {
+            let ord = (s.oop_order as usize).min(SLOTS - 1);
+            if let Some(mapped_uid) = uid_by_oop_order[ord] {
+                s.uid = Some(mapped_uid);
+            }
+        }
+    }
+
     Ok(Tactics {
         current,
         tactics,
@@ -383,7 +432,9 @@ pub fn tactics() -> Result<Tactics, String> {
     })
 }
 
-/// Uygulamadan seçilen taktiği (0, 1 veya 2) FM27 belleğindeki aktif taktik işaretçisine yazar.
+/// Uygulamadan seçilen taktiği (0, 1 veya 2) FM27 belleğindeki tüm ilgili PREPARED_TACTICS_CREATOR_ARRAY
+/// nesnelerine yazar, taktik bloklarını senkronize eder ve oyuncuların saha sırası (`oop_order`) kaymasın diye
+/// `ids[0..11]` dizisini yeni taktiğin `table[i]` haritasına göre yeniden sıralar.
 pub fn set_active_tactic(index: usize) -> Result<usize, String> {
     if index >= 3 {
         return Err("Geçersiz taktik indeksi".into());
@@ -394,31 +445,103 @@ pub fn set_active_tactic(index: usize) -> Result<usize, String> {
         .iter()
         .filter_map(|p| Some((mem::u32_at(p.addr + lay.p_identity + p.shift + 8)?, p.uid)))
         .collect();
-    let (b_addr, s_addr, _cur, _ids, _blocks) = find_club_tactic_objects(&by_person)?;
-    let mut targets = vec![b_addr];
-    if s_addr != 0 && !targets.contains(&s_addr) {
-        targets.push(s_addr);
-    }
-    for delta in [0x2170u64, 0x5808u64, 0x7978u64] {
-        for base in [b_addr, s_addr] {
-            for cand in [base.wrapping_add(delta), base.wrapping_sub(delta)] {
-                if let Some(cur_bytes) = mem::read_bytes(cand + SEL_CURRENT, 2) {
-                    if cur_bytes[0] < 3 && cur_bytes[1] == 0xFF && !targets.contains(&cand) {
-                        targets.push(cand);
-                    }
+    let (_b_addr, _s_addr, cur_raw, cur_ids, blocks, targets) = find_club_tactic_objects(&by_person)?;
+
+    // Eğer yeni seçilen taktiğin `oop_table` haritası mevcut taktikten farklıysa,
+    // oyuncuların mevkileri (Kaleci, Stoper, Orta Saha, Forvet) birbirine karışmasın diye
+    // `cur_ids[0..11]` dizisini `oop_order` üzerinden yeni taktiğin slot sırasına eşliyoruz.
+    let mut remapped_ids = cur_ids.clone();
+    let d = (lay.p_positions.wrapping_sub(MAC_POSITIONS)) as usize;
+    let oop0 = 0x480 - d;
+    if let (Some(&old_blk), Some(&new_blk)) = (blocks.get(cur_raw as usize), blocks.get(index)) {
+        if mem::is_ptr(old_blk) && mem::is_ptr(new_blk) {
+            if let (Some(old_b), Some(new_b)) = (mem::read_bytes(old_blk, BLOCK), mem::read_bytes(new_blk, BLOCK)) {
+                let old_tbl = oop_table(&old_b, oop0 + SLOTS * SLOT - 0x10);
+                let new_tbl = oop_table(&new_b, oop0 + SLOTS * SLOT - 0x10);
+                let mut pid_by_oop = [EMPTY_SLOT; SLOTS];
+                for i in 0..SLOTS {
+                    let ord = (old_tbl[i] as usize).min(SLOTS - 1);
+                    pid_by_oop[ord] = cur_ids[i];
+                }
+                for i in 0..SLOTS {
+                    let ord = (new_tbl[i] as usize).min(SLOTS - 1);
+                    remapped_ids[i] = pid_by_oop[ord];
                 }
             }
         }
     }
+
     let new_byte = [index as u8];
+    let new_id_bytes: Vec<u8> = remapped_ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+    let new_first11_bytes = &new_id_bytes[..SLOTS * 4];
     for addr in targets {
-        if let Some(cur_bytes) = mem::read_bytes(addr + SEL_CURRENT, 2) {
-            if cur_bytes[0] < 3 && cur_bytes[1] == 0xFF {
-                let _ = mem::write_checked(addr + SEL_CURRENT, &[cur_bytes[0]], &new_byte);
+        if let Some(cur_bytes) = mem::read_bytes(addr + SEL_CURRENT, 1) {
+            if cur_bytes[0] < 3 {
+                let _ = mem::write_checked(addr + SEL_CURRENT, &cur_bytes, &new_byte);
+            }
+        }
+        if let Some(old_id_bytes) = mem::read_bytes(addr + SEL_SLOTS, SEL_COUNT * 4) {
+            if mem::write_checked(addr + SEL_SLOTS, &old_id_bytes, &new_id_bytes).is_err() {
+                if let Some(old_11) = mem::read_bytes(addr + SEL_SLOTS, SLOTS * 4) {
+                    let _ = mem::write_checked(addr + SEL_SLOTS, &old_11, new_first11_bytes);
+                }
             }
         }
     }
     Ok(index)
+}
+
+/// Seçilen 11 oyuncuyu (UID listesi, en fazla 11 slot) FM27 belleğindeki aktif ilk 11 dizilişine yazar.
+/// İlk 11'e giren bir oyuncu yedek kulübesindeyse (slot 11..26), çıkardığı ilk 11 oyuncusuyla yer değiştirir.
+pub fn set_lineup(uids: &[u32]) -> Result<usize, String> {
+    if uids.is_empty() {
+        return Err("Boş ilk 11 listesi".into());
+    }
+    let squad = game::squad()?;
+    let lay = game::layout();
+    let mut by_person: HashMap<u32, u32> = HashMap::new();
+    let mut uid_to_person: HashMap<u32, u32> = HashMap::new();
+    for p in &squad {
+        if let Some(pid) = mem::u32_at(p.addr + lay.p_identity + p.shift + 8) {
+            by_person.insert(pid, p.uid);
+            uid_to_person.insert(p.uid, pid);
+        }
+    }
+    let (_b_addr, _s_addr, _cur, cur_ids, _blocks, targets) = find_club_tactic_objects(&by_person)?;
+    let mut new_ids = cur_ids.clone();
+    let mut changed = 0usize;
+
+    for (slot_idx, &uid) in uids.iter().take(SLOTS).enumerate() {
+        if uid == 0 || uid == EMPTY_SLOT {
+            continue;
+        }
+        let Some(&new_pid) = uid_to_person.get(&uid) else {
+            continue;
+        };
+        let old_pid = new_ids[slot_idx];
+        if old_pid == new_pid {
+            continue;
+        }
+        // Eğer yeni oyuncu halihazırda başka bir slottaysa (ilk 11 veya yedek kulübesi), eski oyuncuyla yer değiştir
+        if let Some(other_pos) = new_ids.iter().position(|&x| x == new_pid) {
+            new_ids[other_pos] = old_pid;
+        }
+        new_ids[slot_idx] = new_pid;
+        changed += 1;
+    }
+
+    let new_bytes: Vec<u8> = new_ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+    let new_first11_bytes = &new_bytes[..SLOTS * 4];
+    for addr in targets {
+        if let Some(old_bytes) = mem::read_bytes(addr + SEL_SLOTS, SEL_COUNT * 4) {
+            if mem::write_checked(addr + SEL_SLOTS, &old_bytes, &new_bytes).is_err() {
+                if let Some(old_11) = mem::read_bytes(addr + SEL_SLOTS, SLOTS * 4) {
+                    let _ = mem::write_checked(addr + SEL_SLOTS, &old_11, new_first11_bytes);
+                }
+            }
+        }
+    }
+    Ok(changed.max(1))
 }
 
 #[derive(Serialize)]
