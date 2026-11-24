@@ -424,14 +424,17 @@ pub fn places(t: &Tactic) -> Vec<Place> {
         .map(|s| {
             let ip_l = s.ip.and_then(ip_role).map(|r| r.line);
             let oop_l = s.oop.map(oop_line);
+            // FM'de topsuz roller (oop_line) doğrudan oyuncunun sahadaki gerçek diziliş çizgisine (0..46) bağlıdır.
+            // Topla rol (ip) ile topsuz rol (oop) farklı bir hatta işaret ettiğinde (örn. DOS mevkisindeki oyuncuya
+            // OOS rolü verildiğinde veya OOS mevkisindeki oyuncuya SNT rolü verildiğinde), mevkii ve saha dizilişini
+            // şaşırtmamak için öncelikle topsuz (oop) hattını baz alıyoruz.
             let line = match (ip_l, oop_l) {
-                (Some(il), Some(ol)) => {
-                    if lines_compatible(il, ol) {
-                        il
-                    } else {
-                        ol
-                    }
-                }
+                (Some(il), Some(ol)) => match (il, ol) {
+                    (Line::DefOrCentreMid, Line::DefMid | Line::CentreMid) => ol,
+                    (Line::CentreOrAttMid, Line::CentreMid | Line::AttMid) => ol,
+                    _ if il == ol => il,
+                    _ => ol,
+                },
                 (Some(il), None) => il,
                 (None, Some(ol)) => ol,
                 (None, None) => Line::CentreMid,
@@ -451,6 +454,74 @@ pub fn places(t: &Tactic) -> Vec<Place> {
         }
     }
     out
+}
+
+/// Kayıtlı İlk 11 Şablonu (Taktik ve Kadro ekranlarında tek tıkla 11'i oyuna dizmek için).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SavedLineup {
+    pub name: String,
+    pub uids: Vec<u32>,
+}
+
+/// Görsel futbol sahası (Pitch View) için 11 mevkinin (x: 0.0..1.0 sol->sağ, y: 0.0..1.0 hücum->kaleci) koordinatlarını hesaplar.
+pub fn pitch_coordinates(places: &[Place]) -> Vec<(f32, f32)> {
+    let mut coords = vec![(0.5f32, 0.5f32); places.len()];
+    let mut groups: std::collections::HashMap<u8, Vec<usize>> = std::collections::HashMap::new();
+
+    for (i, pl) in places.iter().enumerate() {
+        // Satır grupları:
+        // 0: Kaleci, 1: Stoperler, 2: Bekler, 3: DOS, 4: Merkez OS, 5: OOS (Merkez), 6: Kanatlar (SĞK / SLK), 7: Forvet
+        let row_key = match pl.line {
+            Line::Keeper => 0,
+            Line::CentreBack => 1,
+            Line::WideBack => 2,
+            Line::DefMid | Line::DefOrCentreMid => 3,
+            Line::CentreMid => 4,
+            Line::CentreOrAttMid | Line::AttMid => 5,
+            Line::Wide => 6,
+            Line::Striker => 7,
+        };
+        groups.entry(row_key).or_default().push(i);
+    }
+
+    for (row_key, mut indices) in groups {
+        // FM'de oop_order sağdan sola doğru sıralanır (Right -> Centre -> Left);
+        // saha görünümünde soldan sağa (Left -> Centre -> Right) dizmek için ters sıralıyoruz.
+        indices.sort_by_key(|&i| places[i].oop_order);
+        indices.reverse();
+
+        let y_base = match row_key {
+            0 => 0.89,
+            1 => 0.74,
+            2 => 0.69,
+            3 => 0.55,
+            4 => 0.42,
+            5 => 0.28,
+            6 => 0.24,
+            _ => 0.12,
+        };
+
+        let n = indices.len();
+        for (k, &idx) in indices.iter().enumerate() {
+            let pl = &places[idx];
+            let x = match pl.side {
+                Side::Left => 0.15,
+                Side::Right => 0.85,
+                Side::Centre => match n {
+                    1 => 0.50,
+                    2 => if k == 0 { 0.35 } else { 0.65 },
+                    3 => match k {
+                        0 => 0.27,
+                        1 => 0.50,
+                        _ => 0.73,
+                    },
+                    _ => 0.20 + (k as f32 / (n.saturating_sub(1).max(1) as f32)) * 0.60,
+                },
+            };
+            coords[idx] = (x, y_base);
+        }
+    }
+    coords
 }
 
 // ---- score ------------------------------------------------------------------------------------
