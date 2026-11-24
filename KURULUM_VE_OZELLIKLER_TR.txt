@@ -1,0 +1,61 @@
+===============================================================================
+  FM27 TRAINER v1.3.0 · by Holyman3
+  KURULUM VE ÖZELLİKLER KILAVUZU (TÜRKÇE)
+===============================================================================
+
+1. KURULUM SEÇENEKLERİ
+-------------------------------------------------------------------------------
+• Seçenek A (Önerilen - Akıllı Kurulum Sihirbazı):
+  "FM27.Trainer.Setup.exe" dosyasını çalıştırın.
+  - Açılış ekranında uygulama dilini (Türkçe, English, Português) seçin.
+  - Bilgisayarınızdaki "Documents\Sports Interactive\Football Manager 27\graphics"
+    klasörü otomatik algılanır. Grafik paketiniz başka bir diskteyse "Gözat..."
+    butonuyla seçebilirsiniz.
+  - "Kur ve Başlat »" butonuna tıkladığınızda uygulama kurulur, Masaüstü ve
+    Başlat Menüsü kısayolları oluşturulur ve Windows "Yüklü Uygulamalar"
+    (Program Ekle/Kaldır) listesine resmi kaldırma (Uninstall) kaydı eklenir.
+
+• Seçenek B (Taşınabilir / Kurulumsuz Çalıştırma):
+  "FM27 Trainer.exe" dosyasına çift tıklayarak hiçbir kurulum yapmadan doğrudan
+  çalıştırabilirsiniz. Tüm dil paketleri (Türkçe, English, Português) doğrudan
+  .exe dosyasının içine gömülüdür.
+
+2. v1.3.0 ÖNE ÇIKAN ÖZELLİKLER
+-------------------------------------------------------------------------------
+• Görsel Saha Dizilişi (Pitch View) & Taktik Senkronizasyonu:
+  - "Taktik" sekmesinde İlk 11 tablosunun sol tarafında çizgili çim saha
+    görünümü yer alır. 11 oyuncunuz gerçek saha mevkilerinde yüz fotoğrafları,
+    uyum puanı rozetleri, Topla/Topsuz rol kısaltmaları ve kondisyon çubukları
+    ile görsel olarak dizilir.
+  - Uygulamadan "Taktik 1 / Taktik 2 / Taktik 3" değiştirdiğinizde oyundaki
+    aktif taktik ve diziliş de mevkiler kaymadan güncellenir.
+
+• Kayıtlı İlk 11 Şablonları & "En İyi 11'i Oyuna Diz":
+  - "En İyi 11'i Oyuna Diz" butonuyla kadronuzdaki en yüksek rol uyumuna sahip
+    11 oyuncuyu tek tıkla oyuna dizebilirsiniz.
+  - Şablon adı yazıp ("As 11", "Kupa 11", "Rotasyon") "Mevcut 11'i Kaydet"
+    butonuyla 10 adede kadar şablon kaydedebilir ve tek tıkla yükleyebilirsiniz.
+
+• Antrenman Seansı Değiştirme (2 Tıkla Takas & Sağ Tık Menüsü):
+  - "Antrenman -> Gelecek Haftalar" ekranında herhangi iki antrenman öğününe
+    sol tıklayarak yerlerini değiştirebilir veya bir öğüne SAĞ TIKLAYARAK
+    açılan listeden istediğiniz antrenman seansını seçip anında FM27'ye
+    yazabilirsiniz.
+
+• Tek Graphics Klasörüyle Yüzler (Faces) ve Kulüp Logosu Entegrasyonu:
+  - Seçtiğiniz tek "FM27 Graphics Klasörü" içinden hem sol menüdeki bağlı
+    kulüp logosunu hem de Kadro ve Taktik ekranlarındaki oyuncu yüzlerini
+    otomatik bulur ve yükler.
+
+• Kadro Sağlığı & Taktik Anlayışı (%100 Sabitleme):
+  - "Kadro" sekmesindeki üst aksiyon barından tek tıkla Herkesi İyileştir,
+    Cezaları Kaldır, Herkesin Moralini Maksimum Yap ve Taktik Anlayışını
+    Maksimum Yap (%100).
+
+3. İLETİŞİM & DESTEK
+-------------------------------------------------------------------------------
+• Discord : https://discord.gg/SYExYVpHP9
+• Kick    : https://kick.com/holyman3
+• E-posta : holyymann3@gmail.com
+• GitHub  : https://github.com/Holymanrepo/Holyman3-Antreman-fm27
+===============================================================================
