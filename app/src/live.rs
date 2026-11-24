@@ -330,6 +330,10 @@ impl LiveState {
         self.club.as_ref()?.get("name")?.as_str().map(str::to_string)
     }
 
+    pub fn club_uid(&self) -> Option<u32> {
+        self.club.as_ref()?.get("uid")?.as_u64().map(|u| u as u32)
+    }
+
     /// Voert (optioneel) een opdracht uit en haalt daarna club + selectie op.
     pub fn refresh(&mut self, ctx: &egui::Context, label: &str, action: Option<Value>) {
         if self.rx.is_some() {
