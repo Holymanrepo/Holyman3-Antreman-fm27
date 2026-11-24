@@ -250,7 +250,7 @@ pub const IP_ROLES: &[Role] = &[
     role!(48, "KOS", "Kanat Orta Saha", "WM", "Wide Midfielder", CentreMid, [passing, crossing, stamina, work_rate, off_the_ball, teamwork, first_touch, decisions]),
     role!(49, "İKK", "İçe Kat Eden Kanat", "IW", "Inside Winger", Wide, [dribbling, passing, crossing, technique, first_touch, off_the_ball, acceleration, pace, agility, flair, composure]),
     role!(50, "HOS", "Hücumcu Orta Saha", "AM", "Attacking Midfielder", CentreOrAttMid, [first_touch, passing, technique, off_the_ball, vision, decisions, composure, long_shots, flair]),
-    role!(51, "DF", "Destek Forvet", "DLF", "Supporting Forward", Striker, [first_touch, passing, technique, composure, decisions, off_the_ball, teamwork, vision, finishing]),
+    role!(51, "PSTP", "Pasör Stoper", "BCB", "Ball Playing Centre-Back", CentreBack, [heading, marking, tackling, positioning, jumping_reach, strength, anticipation, passing, first_touch, composure, vision, technique]),
     role!(52, "İBK", "İçe Kat Eden Bek", "IFB", "Inverted Full-Back", WideBack, [tackling, marking, positioning, heading, strength, concentration, passing, anticipation]),
     role!(53, "GKL", "Geleneksel Kaleci", "TGK", "Traditional Goalkeeper", Keeper, [handling, reflexes, aerial_reach, one_on_ones, concentration, positioning, command_of_area, communication]),
     role!(54, "Bind.STP", "Bindiren Stoper", "OCB", "Overlapping Centre-Back", CentreBack, [pace, stamina, crossing, dribbling, tackling, marking, work_rate, positioning, heading]),
@@ -396,16 +396,46 @@ pub struct Place {
     pub oop_order: u8,
 }
 
+fn lines_compatible(a: Line, b: Line) -> bool {
+    if a == b {
+        return true;
+    }
+    matches!(
+        (a, b),
+        (Line::DefMid | Line::CentreMid, Line::DefOrCentreMid)
+            | (Line::DefOrCentreMid, Line::DefMid | Line::CentreMid)
+            | (Line::CentreMid | Line::AttMid, Line::CentreOrAttMid)
+            | (Line::CentreOrAttMid, Line::CentreMid | Line::AttMid)
+            | (Line::WideBack, Line::CentreBack)
+            | (Line::CentreBack, Line::WideBack)
+            | (Line::Wide, Line::AttMid | Line::Striker | Line::CentreMid)
+            | (Line::AttMid | Line::Striker | Line::CentreMid, Line::Wide)
+    )
+}
+
 /// Linie en kant van elke plek. De linie komt van de rol met bal (FM noemt de plek naar de
-/// opstelling met bal) en anders van de rol zonder bal. De kant staat niet in het tactiekblok:
-/// FM zet de plekken zonder bal per linie van rechts naar links, dus van twee brede plekken in
-/// dezelfde linie is de eerste rechts en de tweede links (zo gezien op de Ajax-save; afgeleid).
+/// opstelling met bal) en anders van de rol zonder bal. Als de met-bal-rol op een heel andere
+/// linie wijst dan de zonder-bal-rol (bv. verdediger vs aanvaller), heeft de zonder-bal-rol
+/// voorrang omdat FM's zonder-bal-rollen strikt per veldlinie genummerd zijn.
 pub fn places(t: &Tactic) -> Vec<Place> {
     let mut out: Vec<Place> = t
         .slots
         .iter()
         .map(|s| {
-            let line = s.ip.and_then(ip_role).map(|r| r.line).or(s.oop.map(oop_line)).unwrap_or(Line::CentreMid);
+            let ip_l = s.ip.and_then(ip_role).map(|r| r.line);
+            let oop_l = s.oop.map(oop_line);
+            let line = match (ip_l, oop_l) {
+                (Some(il), Some(ol)) => {
+                    if lines_compatible(il, ol) {
+                        il
+                    } else {
+                        ol
+                    }
+                }
+                (Some(il), None) => il,
+                (None, Some(ol)) => ol,
+                (None, None) => Line::CentreMid,
+            };
             Place { line, side: Side::Centre, ip: s.ip, oop: s.oop, uid: s.uid, oop_order: s.oop_order }
         })
         .collect();
