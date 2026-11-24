@@ -121,7 +121,9 @@ pub struct LiveState {
     tactics_rx: Option<mpsc::Receiver<Result<Value, String>>>,
     aux_rx: Option<mpsc::Receiver<(Aux, Result<Value, String>)>>,
     rx: Option<mpsc::Receiver<Snapshot>>,
+    rx_is_user_action: bool,
     train_rx: Option<mpsc::Receiver<(bool, bool, Result<Outcome, String>)>>,
+    train_is_user_action: bool,
     last_auto: Option<Instant>,
     last_poll: Option<Instant>,
 }
@@ -163,7 +165,9 @@ impl Default for LiveState {
             tactics_rx: None,
             aux_rx: None,
             rx: None,
+            rx_is_user_action: false,
             train_rx: None,
+            train_is_user_action: false,
             last_auto: None,
             last_poll: None,
         }
@@ -205,6 +209,14 @@ fn short_result(v: &Value) -> String {
                 format!("({t} talks done: {pr} praise, {cr} criticism)")
             }
         }
+        Value::Object(m) if m.contains_key("lineup_changed") => {
+            let n = m.get("lineup_changed").and_then(|v| v.as_u64()).unwrap_or(0);
+            if crate::i18n::is_tr() {
+                format!("({n} mevki FM27 ilk 11'inde güncellendi)")
+            } else {
+                format!("({n} slots updated in FM27 starting XI)")
+            }
+        }
         Value::Object(m) if m.contains_key("players") => format!("({} oyuncu)", m["players"]),
         Value::Object(m) if m.contains_key("bans") => format!("({} ceza)", m["bans"]),
         Value::Object(m) if m.contains_key("undone") => format!("({})", m["undone"].as_str().unwrap_or("")),
@@ -213,7 +225,13 @@ fn short_result(v: &Value) -> String {
 }
 
 impl LiveState {
+    /// Yalnızca kullanıcının başlattığı bir buton aksiyonu devam ederken true döner.
+    /// Arka plan canlı bağlantı (poll) veya otomatik antrenman taramaları butonları asla kilitlemez.
     pub fn busy(&self) -> bool {
+        (self.rx.is_some() && self.rx_is_user_action) || (self.train_rx.is_some() && self.train_is_user_action)
+    }
+
+    fn background_busy(&self) -> bool {
         self.rx.is_some() || self.train_rx.is_some()
     }
 
@@ -296,7 +314,7 @@ impl LiveState {
         self.tactics_rx.is_some()
     }
 
-    /// Uygulamadan seçilen taktiği aktif yapar ve FM27 belleğine bildirir.
+    /// Uygulamadan seçilen taktiği aktif yapar, FM27 belleğine yazar ve güncel taktik dizilişini hemen okur.
     pub fn select_tactic(&mut self, ctx: &egui::Context, pick: usize) {
         let mut raw_idx = pick;
         if let Some(d) = &mut self.tactics {
@@ -305,11 +323,50 @@ impl LiveState {
                 d.current = pick;
             }
         }
+        self.rx = None;
+        self.rx_is_user_action = false;
+        self.last_poll = Some(Instant::now());
+        let (tx, rx) = mpsc::channel();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let _ = agent::request(json!({"cmd": "set_tactic", "index": raw_idx}));
+            let res = agent::request(json!({"cmd": "tactics"})).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(res);
             ctx2.request_repaint();
         });
+        self.tactics_rx = Some(rx);
+    }
+
+    /// Seçilen 11 oyuncuyu (En İyi 11 veya Kayıtlı Şablon) anında hem ekranda hem de FM27 belleğinde günceller.
+    pub fn apply_lineup(&mut self, ctx: &egui::Context, label: &str, uids: Vec<u32>) {
+        // Optimistic UI update: saha dizilişi ve ilk 11 tablosu tıklar tıklamaz anında güncellensin
+        if let Some(d) = &mut self.tactics {
+            let cur = d.current.min(d.tactics.len().saturating_sub(1));
+            if let Some(t) = d.tactics.get_mut(cur) {
+                for (slot, &uid) in t.slots.iter_mut().zip(uids.iter()) {
+                    if uid != 0 {
+                        slot.uid = Some(uid);
+                    }
+                }
+            }
+        }
+        // Arka plan okumasını sıfırla ki eski 11 üzerine yazmasın
+        self.rx = None;
+        self.rx_is_user_action = false;
+        self.last_poll = Some(Instant::now());
+
+        let (tx, rx) = mpsc::channel();
+        let ctx2 = ctx.clone();
+        let choice = self.choice;
+        let lbl = label.to_string();
+        std::thread::spawn(move || {
+            let _ = select(choice);
+            let _ = agent::request(json!({"cmd": "set_lineup", "uids": uids}));
+            let res = agent::request(json!({"cmd": "tactics"})).map_err(|e| format!("{lbl}: {e:#}"));
+            let _ = tx.send(res);
+            ctx2.request_repaint();
+        });
+        self.tactics_rx = Some(rx);
     }
 
     /// Een andere manager of een ander team: wat van het vorige team was, vervalt.
@@ -336,7 +393,10 @@ impl LiveState {
 
     /// Voert (optioneel) een opdracht uit en haalt daarna club + selectie op.
     pub fn refresh(&mut self, ctx: &egui::Context, label: &str, action: Option<Value>) {
-        if self.rx.is_some() {
+        let is_user_action = action.is_some() || !label.is_empty();
+        // Eğer bu bir arka plan taramasıysa ve halihazırda bir iş çalışıyorsa atla;
+        // ama kullanıcı bir butona tıkladıysa (is_user_action) arka plan taramasını ezerek hemen çalıştır!
+        if !is_user_action && self.rx.is_some() {
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -347,6 +407,8 @@ impl LiveState {
         // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
         let keep = self.keep_understanding && std::env::var_os("FM27_SNAPSHOT").is_none();
         let auto_indiv = self.auto_individual && std::env::var_os("FM27_SNAPSHOT").is_none();
+        self.rx_is_user_action = is_user_action;
+        self.last_poll = Some(Instant::now());
         std::thread::spawn(move || {
             let mut snap = Snapshot::default();
             // eerst de keuze van de gebruiker doorgeven (oudere modules kennen dit niet: geen probleem)
@@ -397,9 +459,6 @@ impl LiveState {
                 }
                 if let Ok(t) = agent::request(json!({"cmd": "tactics"})) {
                     snap.tactics = serde_json::from_value(t).ok();
-                }
-                if let Ok(et) = agent::request(json!({"cmd": "easy_talks"})) {
-                    snap.easy_talks = serde_json::from_value(et).ok();
                 }
                 if let Ok(f) = agent::request(json!({"cmd": "human_flags"})) {
                     snap.human_flags = Some(f);
@@ -458,8 +517,36 @@ impl LiveState {
         self.training_job(ctx, eff, &eff_settings, write, only_new, false);
     }
 
+    /// Belirli bir haftanın düzenlenmiş `planned` seanslarını doğrudan FM27 belleğine yazar.
+    pub fn write_week_schedule(&mut self, ctx: &egui::Context, start: NaiveDate, days: Vec<[u16; 3]>, msg: String) {
+        use chrono::Datelike;
+        if let Some(tr) = &mut self.training {
+            if let Some(w) = tr.weeks.iter_mut().find(|w| w.start == start) {
+                w.planned = days.clone();
+                w.current = days.clone();
+                w.written = w.written.max(1);
+            }
+        }
+        self.train_status = msg;
+        self.train_error = false;
+        let choice = self.choice;
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = select(choice);
+            let _ = agent::request(json!({
+                "cmd": "set_week",
+                "start": {"year": start.year(), "doy": start.ordinal()},
+                "days": days,
+            }));
+            ctx2.request_repaint();
+        });
+    }
+
     fn training_job(&mut self, ctx: &egui::Context, eff: &Effectiveness, settings: &PlannerSettings, write: bool, only_new: bool, auto: bool) {
-        if self.busy() {
+        if auto && self.background_busy() {
+            return;
+        }
+        if !auto && self.train_rx.is_some() && self.train_is_user_action {
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -468,6 +555,8 @@ impl LiveState {
         let skip: HashSet<NaiveDate> = HashSet::new();
         let ctx2 = ctx.clone();
         let choice = self.choice;
+        self.train_is_user_action = !auto;
+        self.last_auto = Some(Instant::now());
         std::thread::spawn(move || {
             // de keuze kan net veranderd zijn: nooit in de kalender van het vorige team schrijven
             let _ = select(choice);
@@ -487,6 +576,7 @@ impl LiveState {
         if let Some(rx) = &self.rx {
             if let Ok(s) = rx.try_recv() {
                 self.rx = None;
+                self.rx_is_user_action = false;
                 let was = self.connected;
                 self.connected = s.club.is_some();
                 if s.club.is_some() {
@@ -601,6 +691,7 @@ impl LiveState {
         if let Some(rx) = &self.train_rx {
             if let Ok((wrote, auto, r)) = rx.try_recv() {
                 self.train_rx = None;
+                self.train_is_user_action = false;
                 self.last_check = Some(chrono::Local::now());
                 match r {
                     Ok(o) => {
@@ -645,9 +736,9 @@ impl LiveState {
         if !agent::LIVE_SUPPORTED {
             return;
         }
-        // verbinding & actieve tactiek bijhouden: elke 4 s
-        let due = self.last_poll.is_none_or(|t| t.elapsed().as_secs() >= 4);
-        if due && !self.busy() && agent::module_ready() {
+        // verbinding & actieve tactiek bijhouden: elke 2 s sürekli canlı bağlantı (kullanıcı butonlarını asla kilitlemeden)
+        let due = self.last_poll.is_none_or(|t| t.elapsed().as_millis() >= 2000);
+        if due && !self.background_busy() && agent::module_ready() {
             self.last_poll = Some(Instant::now());
             self.refresh(ctx, "", None);
         }
@@ -657,7 +748,7 @@ impl LiveState {
         let read_only = self.untested_build && !self.allow_untested;
         // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
         let snapshot = std::env::var_os("FM27_SNAPSHOT").is_some();
-        if auto && !snapshot && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
+        if auto && !snapshot && self.connected && !read_only && !self.background_busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
             self.last_auto = Some(Instant::now());
             let eff_settings = settings.with_squad_condition(self.squad_avg_condition());
             self.training_job(ctx, eff, &eff_settings, true, false, true);
